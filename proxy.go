@@ -298,20 +298,20 @@ func (p *proxyState) dropWorker() {
 			continue
 		}
 		if total > 8<<20 {
-			Notify("moshdrop", fmt.Sprintf("正在上传 %.1f MB → %s …", float64(total)/(1<<20), p.up.target))
+			Notify("moshdrop", fmt.Sprintf(msg("n.uploading"), float64(total)/(1<<20), p.up.target))
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), uploadTimeout(total)+30*time.Second)
 		remotes, err := p.up.Upload(ctx, d.tokens)
 		cancel()
 		ms := time.Since(start).Milliseconds()
 		if err != nil {
-			Notify("moshdrop", "上传失败，已放行本地路径。原因："+err.Error())
+			Notify("moshdrop", fmt.Sprintf(msg("n.failed"), err.Error()))
 			logEvent(p.stateDir, dropEvent{Target: p.up.target, Files: baseNames(d.tokens), Bytes: total, Ms: ms, Ok: false, Err: err.Error()})
 			p.injectWhenClean(d.payload, d.bracketed)
 			continue
 		}
 		if total > 8<<20 {
-			Notify("moshdrop", "已送达 ✓")
+			Notify("moshdrop", msg("n.delivered"))
 		}
 		logEvent(p.stateDir, dropEvent{Target: p.up.target, Files: baseNames(d.tokens), Bytes: total, Ms: ms, Ok: true})
 		p.injectWhenClean(FormatInjection(remotes), d.bracketed)

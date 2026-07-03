@@ -22,8 +22,16 @@ type cmdResult struct {
 	err    error
 }
 
-// errUploadTimeout: 每文件超时是"必败重试"，绝不静默重试第二次。
-var errUploadTimeout = errors.New("上传超时")
+// timeoutErr: 每文件超时是"必败重试"，绝不静默重试第二次。
+type timeoutErr struct{ s string }
+
+func (e timeoutErr) Error() string { return e.s }
+func (timeoutErr) Is(target error) bool {
+	_, ok := target.(timeoutErr)
+	return ok
+}
+
+var errUploadTimeout = timeoutErr{"upload timeout"}
 
 // minUploadTimeout 可在测试中调小。
 var minUploadTimeout = 60 * time.Second
@@ -40,6 +48,9 @@ type Uploader struct {
 	mu        sync.Mutex // 串行化 ensure 与上传
 	remoteDir string     // 成功后缓存；失败不缓存 → 下次自动重试
 
+	remoteName string // 远端落点（$HOME 下相对路径），默认 .moshdrop
+	ttlDays    int    // 远端保质期（天），0=不清理
+
 	run func(ctx context.Context, stdin io.Reader, argv []string) cmdResult
 }
 
@@ -48,13 +59,26 @@ func NewUploader(target string, sshArgv []string, localStateDir string) *Uploade
 		sshArgv = []string{"ssh"}
 	}
 	u := &Uploader{
-		target:  target,
-		sshArgv: sshArgv,
-		ctlPath: filepath.Join(ctlSocketDir(localStateDir), "cm-%C"),
-		run:     realRun,
+		target:     target,
+		sshArgv:    sshArgv,
+		ctlPath:    filepath.Join(ctlSocketDir(localStateDir), "cm-%C"),
+		remoteName: ".moshdrop",
+		ttlDays:    7,
+		run:        realRun,
 	}
 	u.disabled.Store(target == "")
 	return u
+}
+
+// ApplyConfig 应用远端目录与保质期（拦截开关由调用方另行处置——doctor 不受其影响）。
+func (u *Uploader) ApplyConfig(cfg Config) {
+	u.remoteName = cfg.RemoteDir
+	u.ttlDays = cfg.TTLDays
+}
+
+// dirExpr 生成远端目录的 shell 表达式："$HOME"/'name'（拼接式，含空格也安全）。
+func (u *Uploader) dirExpr() string {
+	return `"$HOME"/` + shellQuote(u.remoteName)
 }
 
 // ctlSocketDir 选 ControlMaster socket 目录：
@@ -80,7 +104,15 @@ func ctlSocketDir(localStateDir string) string {
 	return localStateDir
 }
 
+// realRunHook: 测试替身入口——返回 handled=true 则短路真实执行。
+var realRunHook func(ctx context.Context, stdin io.Reader, argv []string) (cmdResult, bool)
+
 func realRun(ctx context.Context, stdin io.Reader, argv []string) cmdResult {
+	if realRunHook != nil {
+		if r, handled := realRunHook(ctx, stdin, argv); handled {
+			return r
+		}
+	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Stdin = stdin
 	var out, errb bytes.Buffer
@@ -111,19 +143,24 @@ func (u *Uploader) sshCmd(script string) []string {
 // 顺带清理超过 1 小时的孤儿临时文件（SIGKILL 等极端路径的残留）。
 func (u *Uploader) ensure(ctx context.Context) error {
 	if u.Disabled() {
-		return fmt.Errorf("未能从参数确定 ssh 目标，拖拽上传已停用")
+		return fmt.Errorf(msg("up.notarget"))
 	}
 	if u.remoteDir != "" {
 		return nil
 	}
-	script := `sh -c 'mkdir -p "$HOME/.moshdrop" && { find "$HOME/.moshdrop" -name ".part-*" -mmin +60 -delete 2>/dev/null || true; } && printf %s "$HOME/.moshdrop"'`
-	res := u.run(ctx, nil, u.sshCmd(script))
+	inner := `d=` + u.dirExpr() + `; mkdir -p "$d" && ` +
+		`{ find "$d" -name ".part-*" -mmin +60 -delete 2>/dev/null || true; }`
+	if u.ttlDays > 0 { // 保质期清理：只删过期普通文件
+		inner += fmt.Sprintf(` && { find "$d" -type f ! -name ".part-*" -mtime +%d -delete 2>/dev/null || true; }`, u.ttlDays)
+	}
+	inner += ` && printf %s "$d"`
+	res := u.run(ctx, nil, u.sshCmd("sh -c "+shellQuote(inner)))
 	if res.err != nil {
 		return classifySSHError(res.err, res.stderr)
 	}
 	dir := strings.TrimSpace(string(res.stdout))
 	if !strings.HasPrefix(dir, "/") {
-		return fmt.Errorf("解析远端目录失败: %q", dir)
+		return fmt.Errorf(msg("up.dirparse"), dir)
 	}
 	u.remoteDir = dir
 	return nil
@@ -204,7 +241,7 @@ func (u *Uploader) uploadOne(ctx context.Context, localPath string) (string, err
 	defer cancel()
 
 	name := sanitizeName(localPath)
-	script := `d="$HOME/.moshdrop"; n=` + shellQuote(name) + `; t="$d/.part-$$"; ` +
+	script := `d=` + u.dirExpr() + `; n=` + shellQuote(name) + `; t="$d/.part-$$"; ` +
 		`trap 'rm -f "$t"' HUP INT TERM; ` +
 		`cat > "$t" || { rm -f "$t"; exit 1; }; ` +
 		fmt.Sprintf(`[ "$(wc -c < "$t")" -eq %d ] || { rm -f "$t"; exit 1; }; `, fi.Size()) +
@@ -215,15 +252,15 @@ func (u *Uploader) uploadOne(ctx context.Context, localPath string) (string, err
 	res := u.run(tctx, f, u.sshCmd("sh -c "+shellQuote(script)))
 	if res.err != nil {
 		if tctx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("%w（%s %.1f MB，网络太慢或已断开）",
-				errUploadTimeout, filepath.Base(localPath), float64(fi.Size())/(1<<20))
+			return "", timeoutErr{fmt.Sprintf(msg("up.timeout"),
+				filepath.Base(localPath), float64(fi.Size())/(1<<20))}
 		}
 		return "", classifySSHError(res.err, res.stderr)
 	}
 	// 只剥协议约定的那一个尾换行——文件名自身的首尾空白必须原样保留
 	out := strings.TrimSuffix(string(res.stdout), "\n")
 	if out == "" {
-		return "", fmt.Errorf("远端未回显文件名")
+		return "", fmt.Errorf(msg("up.noecho"))
 	}
 	return out, nil
 }

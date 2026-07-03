@@ -24,7 +24,7 @@ func runDoctor(args []string) int {
 		}
 		fmt.Printf(" %s %-22s %s\n", mark, name, detail)
 	}
-	fmt.Println("moshdrop doctor")
+	fmt.Println(msg("d.title"))
 
 	// 1) mosh 本体
 	moshBin := os.Getenv("MOSHDROP_CMD")
@@ -33,9 +33,9 @@ func runDoctor(args []string) int {
 	}
 	if p, err := exec.LookPath(moshBin); err == nil {
 		out, _ := exec.Command(p, "--version").CombinedOutput()
-		step("mosh 可执行", true, p+"  "+firstLine(string(out)))
+		step(msg("d.mosh"), true, p+"  "+firstLine(string(out)))
 	} else {
-		step("mosh 可执行", false, "找不到 "+moshBin+"（brew install mosh）")
+		step(msg("d.mosh"), false, fmt.Sprintf(msg("d.moshmiss"), moshBin))
 	}
 
 	// 2) 目标推导
@@ -48,20 +48,23 @@ func runDoctor(args []string) int {
 		sshArgv = sa
 	}
 	if target == "" {
-		step("ssh 目标", false, "用法: moshdrop doctor <host>")
+		step(msg("d.target"), false, msg("d.usage"))
 		summary(fail)
 		return 1
 	}
-	step("ssh 目标", true, fmt.Sprintf("%s（通道: %s）", target, strings.Join(sshArgv, " ")))
+	step(msg("d.target"), true, fmt.Sprintf(msg("d.via"), target, strings.Join(sshArgv, " ")))
 
 	stateDir := stateDirPath()
 	_ = os.MkdirAll(stateDir, 0o700)
+	cfg := LoadConfig(stateDir, target)
+	setLang(cfg.Lang)
 	u := NewUploader(target, sshArgv, stateDir)
+	u.ApplyConfig(cfg)
 	defer u.Close() // 任何 early-return 都不留 ControlMaster 残连
 
 	// 3) ControlPath 长度（unix socket 上限 104）
 	cp := strings.Replace(u.ctlPath, "%C", strings.Repeat("x", 40), 1)
-	step("ControlPath 长度", len(cp) < 104, fmt.Sprintf("%d/104  %s", len(cp), u.ctlPath))
+	step(msg("d.ctl"), len(cp) < 104, fmt.Sprintf("%d/104  %s", len(cp), u.ctlPath))
 
 	// 4) 免密连通 + 远端目录
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -71,12 +74,12 @@ func runDoctor(args []string) int {
 	err := u.ensure(ctx)
 	u.mu.Unlock()
 	if err != nil {
-		step("ssh 免密连通", false, err.Error())
-		fmt.Println("   提示: 先手动跑一次  ssh " + target + " true  确认免密可用")
+		step(msg("d.conn"), false, err.Error())
+		fmt.Println(fmt.Sprintf(msg("d.hint"), target))
 		summary(fail)
 		return 1
 	}
-	step("ssh 免密连通", true, fmt.Sprintf("%d ms，远端目录 %s", time.Since(t0).Milliseconds(), u.remoteDir))
+	step(msg("d.conn"), true, fmt.Sprintf(msg("d.connok"), time.Since(t0).Milliseconds(), u.remoteDir))
 
 	// 5) 探针文件端到端（真上传 + sha256 校验 + 清理）
 	probe := filepath.Join(os.TempDir(), fmt.Sprintf("moshdrop-probe-%d.txt", os.Getpid()))
@@ -85,7 +88,7 @@ func runDoctor(args []string) int {
 	defer os.Remove(probe)
 	remotes, err := u.Upload(ctx, []string{probe})
 	if err != nil {
-		step("探针上传", false, err.Error())
+		step(msg("d.probe"), false, err.Error())
 		summary(fail)
 		return 1
 	}
@@ -97,12 +100,12 @@ func runDoctor(args []string) int {
 	if f := strings.Fields(string(res.stdout)); len(f) > 0 {
 		remoteSum = f[0]
 	}
-	step("探针端到端校验", remoteSum == hex.EncodeToString(sum[:]), remotes[0])
+	step(msg("d.e2e"), remoteSum == hex.EncodeToString(sum[:]), remotes[0])
 	u.run(ctx, nil, u.sshCmd("sh -c "+shellQuote("rm -f "+shellQuote(remotes[0]))))
 
 	// 6) 最近一次失败留痕
 	if hint := lastFailureHint(stateDir); hint != "" {
-		fmt.Println("   最近一次失败: " + hint)
+		fmt.Println(msg("d.lastfail") + hint)
 	}
 	summary(fail)
 	if fail > 0 {
@@ -113,9 +116,9 @@ func runDoctor(args []string) int {
 
 func summary(fail int) {
 	if fail == 0 {
-		fmt.Println("全部通过 — 拖拽链路健康。")
+		fmt.Println(msg("d.allpass"))
 	} else {
-		fmt.Printf("%d 项未通过。\n", fail)
+		fmt.Printf(msg("d.nfail"), fail)
 	}
 }
 
