@@ -29,7 +29,8 @@ type proxyState struct {
 	shutdown     chan struct{} // 收尾已启动（终端没了/收到外部信号）
 	shutdownOnce sync.Once
 
-	drops chan drop // 拖拽处理队列：单 worker 串行消费 → 注入顺序 = 拖拽顺序
+	drops chan drop     // 拖拽处理队列：单 worker 串行消费 → 注入顺序 = 拖拽顺序
+	kick  chan struct{} // scanner 有滞留状态时唤醒 idle 巡逻（平时定时器熟睡，空载 0% CPU）
 }
 
 // drop 是一次已通过语法门的拖拽候选。
@@ -71,7 +72,7 @@ func RunProxy(cmd *exec.Cmd, up *Uploader) (int, error) {
 
 	p := &proxyState{ptmx: ptmx, up: up, stateDir: stateDirPath(), lastFeed: time.Now(),
 		stop: make(chan struct{}), shutdown: make(chan struct{}),
-		drops: make(chan drop, 64)}
+		drops: make(chan drop, 64), kick: make(chan struct{}, 1)}
 	go p.dropWorker()
 
 	// 外部信号（kill/终端关闭）：转发给子进程并启动限时收尾；终端态由下方 defer 恢复
@@ -196,21 +197,32 @@ func (p *proxyState) injectWhenClean(payload string, bracketed bool) {
 	}
 }
 
+// idleLoop 事件驱动：只有 scanner 真的扣押着东西（半截标记/未闭合粘贴）才开
+// 25ms 巡逻，状态干净立即回去熟睡——空载 CPU ≈ 0%。
 func (p *proxyState) idleLoop() {
-	tick := time.NewTicker(25 * time.Millisecond)
-	defer tick.Stop()
 	for {
 		select {
 		case <-p.stop:
 			return
-		case <-tick.C:
-			p.mu.Lock()
-			evs := p.sc.Idle(time.Since(p.lastFeed))
-			for _, ev := range evs {
-				p.write(ev.Data)
-			}
-			p.mu.Unlock()
+		case <-p.kick:
 		}
+		tick := time.NewTicker(25 * time.Millisecond)
+		for dirty := true; dirty; {
+			select {
+			case <-p.stop:
+				tick.Stop()
+				return
+			case <-tick.C:
+				p.mu.Lock()
+				evs := p.sc.Idle(time.Since(p.lastFeed))
+				for _, ev := range evs {
+					p.write(ev.Data)
+				}
+				dirty = p.sc.HasPending() || p.sc.InPaste()
+				p.mu.Unlock()
+			}
+		}
+		tick.Stop()
 	}
 }
 
@@ -250,7 +262,14 @@ func (p *proxyState) stdinLoop(cmd *exec.Cmd) {
 					p.write(ev.Data)
 				}
 			}
+			dirty := p.sc.HasPending() || p.sc.InPaste()
 			p.mu.Unlock()
+			if dirty { // 有滞留：唤醒 idle 巡逻
+				select {
+				case p.kick <- struct{}{}:
+				default:
+				}
+			}
 			p.enqueue(enq)
 		}
 		if err != nil {
