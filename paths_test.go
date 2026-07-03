@@ -64,6 +64,29 @@ func TestParseDraggedPaste(t *testing.T) {
 			t.Fatal("空白不能拦")
 		}
 	})
+	t.Run("换行分隔列表拒绝(审计D1回归)", func(t *testing.T) {
+		if _, ok := ParseDraggedPaste(plain + "\n" + esc(cjk)); ok {
+			t.Fatal("换行分隔的文本列表不是拖拽，不得劫持改写")
+		}
+	})
+	t.Run("含回车拒绝", func(t *testing.T) {
+		if _, ok := ParseDraggedPaste(plain + "\r"); ok {
+			t.Fatal("含回车的载荷不是拖拽")
+		}
+	})
+}
+
+func TestParsePasteSyntax(t *testing.T) {
+	if paths, ok := parsePasteSyntax(`/a/b\ c.png /d.txt`); !ok || len(paths) != 2 ||
+		paths[0] != "/a/b c.png" || paths[1] != "/d.txt" {
+		t.Fatalf("语法解析失败: %v %v", paths, ok)
+	}
+	if _, ok := parsePasteSyntax("hello world"); ok {
+		t.Fatal("非路径文本必须判否")
+	}
+	if _, ok := parsePasteSyntax("/a\n/b"); ok {
+		t.Fatal("未转义换行必须判否")
+	}
 }
 
 func TestFormatInjection(t *testing.T) {

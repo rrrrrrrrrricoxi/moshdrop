@@ -89,6 +89,43 @@ func TestScannerPasteAbort(t *testing.T) {
 	}
 }
 
+// 审计 E4 回归：>2MiB 溢出分支——放弃拦截并原样放行全部字节。
+func TestScannerOverflowPassthrough(t *testing.T) {
+	var s Scanner
+	big := bytes.Repeat([]byte("A"), maxPaste+64)
+	var evs []Event
+	evs = append(evs, s.Feed([]byte(bpS))...)
+	for i := 0; i < len(big); i += 64 << 10 {
+		end := i + 64<<10
+		if end > len(big) {
+			end = len(big)
+		}
+		evs = append(evs, s.Feed(big[i:end])...)
+	}
+	evs = append(evs, s.Feed([]byte(bpE+"tail"))...)
+	evs = append(evs, s.Idle(time.Second)...)
+	fwd, pastes := collect(evs)
+	if len(pastes) != 0 {
+		t.Fatal("溢出后不得再产出 EvPaste")
+	}
+	want := bpS + string(big) + bpE + "tail"
+	if string(fwd) != want {
+		t.Fatalf("溢出放行不完整: got %d bytes want %d", len(fwd), len(want))
+	}
+}
+
+func TestScannerHasPending(t *testing.T) {
+	var s Scanner
+	s.Feed([]byte("x\x1b[20"))
+	if !s.HasPending() {
+		t.Fatal("半截标记应报告 pending")
+	}
+	s.Idle(time.Second)
+	if s.HasPending() {
+		t.Fatal("冲刷后不应再有 pending")
+	}
+}
+
 // 模糊测试：随机字节随机切块（不含标记），透传必须逐字节无损
 func TestScannerFuzzTransparency(t *testing.T) {
 	rng := rand.New(rand.NewSource(42))

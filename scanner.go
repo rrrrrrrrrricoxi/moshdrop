@@ -33,6 +33,9 @@ type Scanner struct {
 
 func (s *Scanner) InPaste() bool { return s.inPaste }
 
+// HasPending: 块尾滞留着疑似半截标记（注入方须避开此刻，防止劈开用户的转义序列）。
+func (s *Scanner) HasPending() bool { return len(s.pending) > 0 }
+
 func (s *Scanner) Feed(chunk []byte) []Event {
 	var evs []Event
 	data := append(s.pending, chunk...)
