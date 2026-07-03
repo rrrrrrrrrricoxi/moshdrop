@@ -29,14 +29,28 @@ type Scanner struct {
 	inPaste bool
 	pending []byte // 块尾滞留的疑似半截标记
 	paste   []byte
+	rawOpen bool // 溢出/中止后，远端仍处于"未闭合的裸粘贴流"中（注入必须避开）
 }
 
+// RawPasteOpen: 溢出或超时中止把 bpStart 原样放行后，真正的 bpEnd 还没流过——
+// 此刻远端仍在粘贴态，注入会劈进用户粘贴中段并提前终结远端粘贴。
+func (s *Scanner) RawPasteOpen() bool { return s.rawOpen }
+
 func (s *Scanner) InPaste() bool { return s.inPaste }
+
+// HasPending: 块尾滞留着疑似半截标记（注入方须避开此刻，防止劈开用户的转义序列）。
+func (s *Scanner) HasPending() bool { return len(s.pending) > 0 }
 
 func (s *Scanner) Feed(chunk []byte) []Event {
 	var evs []Event
 	data := append(s.pending, chunk...)
 	s.pending = nil
+	// 裸粘贴流中观察到 bpEnd 流过 → 远端粘贴态闭合。
+	// （bpEnd 恰在块边界被切且前缀未被扣押的极端切点会漏检——
+	// rawOpen 只会多保守，注入方有 1s 兜底，不致卡死。）
+	if s.rawOpen && bytes.Contains(data, []byte(bpEnd)) {
+		s.rawOpen = false
+	}
 	for len(data) > 0 {
 		if s.inPaste {
 			if i := bytes.Index(data, []byte(bpEnd)); i >= 0 {
@@ -55,6 +69,7 @@ func (s *Scanner) Feed(chunk []byte) []Event {
 				evs = append(evs, Event{EvForward, out})
 				s.paste = nil
 				s.inPaste = false
+				s.rawOpen = true // bpStart 已放行而 bpEnd 未至
 			}
 			data = nil
 			continue
@@ -88,6 +103,7 @@ func (s *Scanner) Idle(sinceLast time.Duration) []Event {
 		out := append([]byte(bpStart), s.paste...)
 		out = append(out, s.pending...)
 		s.paste, s.pending, s.inPaste = nil, nil, false
+		s.rawOpen = true // 同溢出：起始标记已放行，闭合标记未至
 		return []Event{{EvForward, out}}
 	}
 	if len(s.pending) == 0 || sinceLast < 50*time.Millisecond {
