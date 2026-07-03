@@ -10,6 +10,8 @@ import (
 const version = "1.0.0"
 
 func main() {
+	// 语言尽早解析（--help 等子命令也要吃到 config 的 lang）
+	setLang(LoadConfig(stateDirPath(), "").Lang)
 	args := os.Args[1:]
 	if len(args) > 0 {
 		switch args[0] {
