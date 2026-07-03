@@ -4,7 +4,9 @@
 
 A transparent [mosh](https://mosh.org) wrapper for macOS: drag any file into your terminal window and it lands on the remote machine — your input stream receives a ready-to-use remote path. Everything else passes through byte-for-byte.
 
-> 🎬 *demo GIF coming here: drag a screenshot thumbnail into a remote Claude Code session, watch it appear as `[Image]`*
+![demo: drag a screenshot into a remote Claude Code session over mosh](docs/demo.gif)
+
+*Real time ÷ 2.5 — take a screenshot, drag the floating thumbnail into a mosh session, the remote path appears; Claude Code on the remote box reads the actual image.*
 
 ## Why
 
