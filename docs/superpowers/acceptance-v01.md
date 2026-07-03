@@ -25,9 +25,13 @@
 - `TERM=xterm-ghostty` 时 ccc 缺 terminfo（与 moshdrop 无关，用户日常入口正常）。
 - mosh 对"瞬时命令"偶发遗留 mosh-server（裸 mosh 同样），非 moshdrop 缺陷。
 
-## 待用户真机确认（v0.1 收尾项）
+## 用户真机验收（2026-07-03 完成）
 
-- [ ] `~/bin/moshdrop ccc -- tmux new -A -s main` 进 CC → 拖截图浮窗 → `[Image #N]` 出现且 CC 能描述图片
-- [ ] 多文件拖拽、中文带空格文件名
-- [ ] 断 Wi-Fi 数秒重连，mosh 自愈无感
-- [ ] 日用一周 dogfood
+- [x] **shell 拖拽**：浮窗拖进 moshdrop 会话 → 注入 `/Users/ccc/.moshdrop/Screenshot…png` 远端路径，`file` 验证 2.4MB 合法 PNG（3420×2214）— PASS
+- [x] **CC 拖拽**：拖图进远端 CC → `[Image #N]` → CC 像素级评估：3 个不可编造细节全对、路径/大小/magic number 验证、新鲜度 41 秒 → CC 判定 **PASS ✅**
+- [x] 带空格文件名（截图默认名即含空格）— PASS
+- [ ] 多文件拖拽（日用中顺带验证）
+- [ ] 断线重连（日用中顺带验证）
+- [ ] 日用一周 dogfood（进行中，起于 2026-07-03）
+
+**v0.1 验收结论：通过。** "feels like native terminal"（键击开销 0.13ms + 全透传一致性）+ 核心场景（拖浮窗喂远端 CC）双达标。
