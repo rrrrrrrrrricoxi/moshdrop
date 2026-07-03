@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -26,6 +25,13 @@ type proxyState struct {
 	sc       Scanner
 	lastFeed time.Time
 	stop     chan struct{}
+
+	shutdown     chan struct{} // 收尾已启动（终端没了/收到外部信号）
+	shutdownOnce sync.Once
+}
+
+func (p *proxyState) beginShutdown() {
+	p.shutdownOnce.Do(func() { close(p.shutdown) })
 }
 
 // RunProxy 在 pty 上运行 cmd，本端 stdio 与之互接；返回子进程退出码。
@@ -54,7 +60,10 @@ func RunProxy(cmd *exec.Cmd, up *Uploader) (int, error) {
 	}()
 	defer signal.Stop(winch)
 
-	// 外部信号（kill/终端关闭）：转发给子进程让其自然退出；终端态由下方 defer 恢复
+	p := &proxyState{ptmx: ptmx, up: up, stateDir: stateDirPath(), lastFeed: time.Now(),
+		stop: make(chan struct{}), shutdown: make(chan struct{})}
+
+	// 外部信号（kill/终端关闭）：转发给子进程并启动限时收尾；终端态由下方 defer 恢复
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)
 	go func() {
@@ -62,12 +71,7 @@ func RunProxy(cmd *exec.Cmd, up *Uploader) (int, error) {
 			if cmd.Process != nil {
 				_ = cmd.Process.Signal(s)
 			}
-			go func() {
-				time.Sleep(3 * time.Second)
-				if cmd.Process != nil {
-					_ = cmd.Process.Kill()
-				}
-			}()
+			p.beginShutdown()
 		}
 	}()
 	defer signal.Stop(sigs)
@@ -79,24 +83,60 @@ func RunProxy(cmd *exec.Cmd, up *Uploader) (int, error) {
 		}
 	}
 
-	// 远端→屏幕：零解析直通
+	// 远端→屏幕：持续排空 pty。stdout 死了也要继续读并丢弃——
+	// mosh 退出时会等待终端输出被取走(tcdrain)，无人排空它会卡死在
+	// 内核退出路径（连 SIGKILL 都免疫），进而把我们拖成僵尸。
 	copyDone := make(chan struct{})
 	go func() {
-		_, _ = io.Copy(os.Stdout, ptmx)
-		close(copyDone)
+		buf := make([]byte, 32*1024)
+		stdoutOK := true
+		for {
+			n, rerr := ptmx.Read(buf)
+			if n > 0 && stdoutOK {
+				if _, werr := os.Stdout.Write(buf[:n]); werr != nil {
+					stdoutOK = false
+				}
+			}
+			if rerr != nil {
+				close(copyDone)
+				return
+			}
+		}
 	}()
 
-	p := &proxyState{ptmx: ptmx, up: up, stateDir: stateDirPath(), lastFeed: time.Now(), stop: make(chan struct{})}
 	go p.idleLoop()
 	go p.stdinLoop(cmd)
 
-	err = cmd.Wait()
+	// Wait 放到 goroutine：正常情况无限等（会话可活数天），
+	// 一旦收尾启动则限时——5s 不死补 SIGKILL，再 3s 放弃尸体自行退出。
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- cmd.Wait() }()
+	select {
+	case err = <-waitDone:
+	case <-p.shutdown:
+		select {
+		case err = <-waitDone:
+		case <-time.After(5 * time.Second):
+			trace("子进程 5s 未退出, SIGKILL")
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+			select {
+			case err = <-waitDone:
+			case <-time.After(3 * time.Second):
+				trace("子进程卡死在内核退出路径, 放弃等待")
+				err = nil
+			}
+		}
+	}
+	trace("cmd.Wait 阶段结束: %v", err)
 	close(p.stop)
-	// 排空最后一屏输出再返回（子进程退出瞬间可能还有未读的 pty 缓冲）
+	// 排空最后一屏输出再返回
 	select {
 	case <-copyDone:
 	case <-time.After(300 * time.Millisecond):
 	}
+	trace("输出已排空, 准备返回")
 	if ee, ok := err.(*exec.ExitError); ok {
 		code := ee.ExitCode()
 		if code < 0 {
@@ -190,17 +230,13 @@ func (p *proxyState) stdinLoop(cmd *exec.Cmd) {
 			}
 		}
 		if err != nil {
+			trace("stdin EOF/err: %v → SIGHUP 子进程并启动限时收尾", err)
 			// 终端没了：按真实终端关闭的语义给子进程发 HUP。
 			// 绝不注入 ^D 之类字节——那会误杀远端 tmux 里的前台进程。
 			if cmd.Process != nil {
 				_ = cmd.Process.Signal(syscall.SIGHUP)
 			}
-			go func() {
-				time.Sleep(2 * time.Second)
-				if cmd.Process != nil {
-					_ = cmd.Process.Kill()
-				}
-			}()
+			p.beginShutdown()
 			return
 		}
 	}

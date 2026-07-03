@@ -48,7 +48,9 @@ func main() {
 		moshBin = "mosh"
 	}
 	code, err := RunProxy(exec.Command(moshBin, args...), up)
+	trace("RunProxy 返回 code=%d err=%v, 开始 up.Close", code, err)
 	up.Close()
+	trace("up.Close 完成, 即将 os.Exit(%d)", code)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "moshdrop:", err)
 	}
