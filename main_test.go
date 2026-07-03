@@ -9,5 +9,6 @@ import (
 // 任何模拟故障的用例都绝不允许骚扰开发者/用户的真实通知中心。
 func TestMain(m *testing.M) {
 	os.Setenv("MOSHDROP_MUTE_NOTIFY", "1")
+	os.Setenv("MOSHDROP_LANG", "zh") // 测试断言锁定中文文案
 	os.Exit(m.Run())
 }

@@ -254,3 +254,32 @@ func TestUploadNoRetryOnTimeout(t *testing.T) {
 		t.Fatalf("超时不得重试, 期望 2 次调用(ensure+1), got %d", len(*calls))
 	}
 }
+
+// v1.0：ensure 脚本必须应用配置的远端目录与 TTL 清理。
+func TestEnsureScriptTTLAndDir(t *testing.T) {
+	var script string
+	u := NewUploader("ccc", nil, t.TempDir())
+	u.ApplyConfig(Config{RemoteDir: "my drops", TTLDays: 3, Intercept: true})
+	u.run = func(_ context.Context, _ io.Reader, argv []string) cmdResult {
+		script = argv[len(argv)-1]
+		return cmdResult{stdout: []byte("/r/my drops")}
+	}
+	u.Prewarm()
+	if !strings.Contains(script, "my drops") || !strings.Contains(script, `"$HOME"/`) {
+		t.Fatalf("远端目录未按配置生效: %s", script)
+	}
+	if !strings.Contains(script, "-mtime +3") {
+		t.Fatalf("TTL 清理缺失: %s", script)
+	}
+	// TTL=0 → 不清理
+	u2 := NewUploader("ccc", nil, t.TempDir())
+	u2.ApplyConfig(Config{RemoteDir: ".moshdrop", TTLDays: 0, Intercept: true})
+	u2.run = func(_ context.Context, _ io.Reader, argv []string) cmdResult {
+		script = argv[len(argv)-1]
+		return cmdResult{stdout: []byte("/r/.moshdrop")}
+	}
+	u2.Prewarm()
+	if strings.Contains(script, "-mtime") {
+		t.Fatalf("TTL=0 不应清理: %s", script)
+	}
+}

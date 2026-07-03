@@ -1,0 +1,30 @@
+version: 2
+project_name: moshdrop
+
+builds:
+  - env: [CGO_ENABLED=0]
+    goos: [darwin]
+    goarch: [amd64, arm64]
+    ldflags: ["-s -w -X main.version={{ .Version }}"]
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
+
+brews:
+  - repository:
+      owner: rrrrrrrrrricoxi
+      name: homebrew-tap
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/rrrrrrrrrricoxi/moshdrop
+    description: "Keep mosh. Just drop files. Drag-and-drop file upload for mosh sessions."
+    license: MIT
+    dependencies:
+      - name: mosh

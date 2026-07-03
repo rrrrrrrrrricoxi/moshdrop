@@ -7,14 +7,19 @@ import (
 	"path/filepath"
 )
 
-const version = "0.2.0"
+// version 由 goreleaser 在发布构建时注入（-X main.version）
+var version = "1.0.0"
 
 func main() {
+	// 语言尽早解析（--help 等子命令也要吃到 config 的 lang）
+	setLang(LoadConfig(stateDirPath(), "").Lang)
 	args := os.Args[1:]
 	if len(args) > 0 {
 		switch args[0] {
 		case "doctor":
 			os.Exit(runDoctor(args[1:]))
+		case "paste":
+			os.Exit(runPaste(args[1:]))
 		case "--version", "-V":
 			fmt.Println("moshdrop", version)
 			return
@@ -32,13 +37,19 @@ func main() {
 		}
 		sshArgv = sa
 	} else if target == "" {
-		fmt.Fprintln(os.Stderr, "moshdrop: 未能确定 ssh 目标，拖拽上传停用（mosh 本身不受影响）:", err)
+		fmt.Fprintln(os.Stderr, msg("m.notarget"), err)
 	}
 
 	stateDir := stateDirPath()
 	_ = os.MkdirAll(stateDir, 0o700)
+	cfg := LoadConfig(stateDir, target)
+	setLang(cfg.Lang)
 
 	up := NewUploader(target, sshArgv, stateDir)
+	up.ApplyConfig(cfg)
+	if !cfg.Intercept {
+		up.disabled.Store(true) // 配置关拦截 = 真·纯透传
+	}
 	if !up.Disabled() {
 		go up.Prewarm()
 	}
@@ -64,16 +75,40 @@ func stateDirPath() string {
 	return filepath.Join(os.Getenv("HOME"), ".moshdrop")
 }
 
+func curLangIsZH() bool {
+	_ = msg("d.title") // 触发一次语言解析
+	return curLang == "zh"
+}
+
 func printHelp() {
-	fmt.Print(`moshdrop — mosh 的透明包装器：拖文件进终端即自动上传到远端
+	if curLangIsZH() {
+		fmt.Print(`moshdrop — mosh 的透明包装器：拖文件进终端即自动上传到远端
 
 用法:
   moshdrop <mosh 的任意参数>     照常连接（例: moshdrop ccc -- tmux new -A -s main）
+  moshdrop paste [host]          把剪贴板里的图片上传，远端路径回填剪贴板
   moshdrop doctor <host>         全链路体检
   moshdrop --version | --help
 
-工作方式: 拖进终端的本地文件会被自动上传到远端 ~/.moshdrop/，
-输入流里出现的是远端可用路径。其余输入逐字节透传。
+工作方式: 拖进终端的本地文件自动上传到远端（默认 ~/.moshdrop/），
+输入流里出现的是远端可用路径；其余输入逐字节透传。
 失败时原样放行你的输入并弹系统通知（详情见 ~/.moshdrop/events.log）。
+配置: ~/.moshdrop/config（ttl_days / intercept / lang / remote_dir，支持 host.<别名>.键 覆盖）
+`)
+		return
+	}
+	fmt.Print(`moshdrop — transparent mosh wrapper: drag files into your terminal, they land on the remote
+
+Usage:
+  moshdrop <any mosh args>       connect as usual (e.g. moshdrop myhost -- tmux new -A -s main)
+  moshdrop paste [host]          upload the clipboard image; remote path is copied back to your clipboard
+  moshdrop doctor <host>         end-to-end health check
+  moshdrop --version | --help
+
+How it works: local files dragged into the terminal are uploaded to the remote
+(default ~/.moshdrop/) and your input stream receives a usable remote path.
+Everything else passes through byte-for-byte. On failure your original paste is
+passed through untouched, plus a system notification (see ~/.moshdrop/events.log).
+Config: ~/.moshdrop/config (ttl_days / intercept / lang / remote_dir; host.<alias>.key overrides)
 `)
 }

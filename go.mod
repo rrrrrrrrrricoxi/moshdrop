@@ -1,4 +1,4 @@
-module github.com/notrico/moshdrop
+module github.com/rrrrrrrrrricoxi/moshdrop
 
 go 1.19
 
