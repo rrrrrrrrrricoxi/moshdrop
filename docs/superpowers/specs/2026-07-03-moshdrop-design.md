@@ -4,7 +4,7 @@
 
 ## 1. 背景与问题
 
-mosh 是屏幕状态同步器而非字节管道，任何依赖终端转义序列的带内文件传输协议（zmodem/lrzsz、trzsz、iTerm2 上传、kitty 传输协议）都无法穿过 mosh。这是 mosh 上游挂了十年的开放问题（mobile-shell/mosh#1184、#1135），上游近乎休眠（上一版本 1.4.0 发布于 2022 年），等待官方协议内整合不现实。
+mosh 是屏幕状态同步器而非字节管道，任何依赖终端转义序列的带内文件传输协议（zmodem/lrzsz、trzsz、iTerm2 上传、kitty 传输协议）都无法穿过 mosh。这是 mosh 上游挂了多年的开放请求(2021/2022 起)（mobile-shell/mosh#1184、#1135），上游近乎休眠（上一版本 1.4.0 发布于 2022 年），等待官方协议内整合不现实。
 
 同时，2025-2026 年大量用户在远程机器上通过 mosh + tmux 运行终端 AI Agent（Claude Code、Codex CLI 等），"把本地截图/文件喂给远端 Agent"成为高频新需求。现有唯一接近的方案 trzsz-ssh (tssh) 要求整体替换 mosh，对依赖 mosh 抗弱网能力的用户不可接受。
 

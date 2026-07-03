@@ -10,7 +10,7 @@ A transparent [mosh](https://mosh.org) wrapper for macOS: drag any file into you
 
 ## Why
 
-mosh doesn't carry your bytes end-to-end — it syncs *screen state*. That's what makes it survive bad Wi-Fi, and it's also why every trick that smuggles files through the terminal (zmodem/lrzsz, trzsz, iTerm2 ⌥-drag, kitty transfer) dies at the mosh boundary. [Open issue since 2014](https://github.com/mobile-shell/mosh/issues/1184).
+mosh doesn't carry your bytes end-to-end — it syncs *screen state*. That's what makes it survive bad Wi-Fi, and it's also why every trick that smuggles files through the terminal (zmodem/lrzsz, trzsz, iTerm2 ⌥-drag, kitty transfer) dies at the mosh boundary. In-band support has been requested for years ([zmodem](https://github.com/mobile-shell/mosh/issues/1184), [escape-sequence pass-through](https://github.com/mobile-shell/mosh/issues/1135)) with no path forward inside the protocol.
 
 Meanwhile, if you run **Claude Code / Codex or any AI CLI on a remote box over mosh + tmux**, you constantly want to feed it local screenshots. moshdrop makes that a single drag.
 
