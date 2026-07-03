@@ -27,8 +27,11 @@ func RunProxy(cmd *exec.Cmd, up *Uploader) (int, error) {
 	winch := make(chan os.Signal, 1)
 	signal.Notify(winch, syscall.SIGWINCH)
 	resize := func() {
-		if ws, err := pty.GetsizeFull(os.Stdin); err == nil {
+		if ws, err := pty.GetsizeFull(os.Stdin); err == nil && ws.Cols > 0 && ws.Rows > 0 {
 			_ = pty.Setsize(ptmx, ws)
+		} else {
+			// 非 tty / 尺寸不可得：兜底 80x24，0x0 会让 mosh 客户端崩溃
+			_ = pty.Setsize(ptmx, &pty.Winsize{Rows: 24, Cols: 80})
 		}
 	}
 	resize()
