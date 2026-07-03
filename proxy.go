@@ -28,6 +28,15 @@ type proxyState struct {
 
 	shutdown     chan struct{} // 收尾已启动（终端没了/收到外部信号）
 	shutdownOnce sync.Once
+
+	drops chan drop // 拖拽处理队列：单 worker 串行消费 → 注入顺序 = 拖拽顺序
+}
+
+// drop 是一次已通过语法门的拖拽候选。
+type drop struct {
+	payload   string
+	tokens    []string
+	bracketed bool
 }
 
 func (p *proxyState) beginShutdown() {
@@ -61,7 +70,9 @@ func RunProxy(cmd *exec.Cmd, up *Uploader) (int, error) {
 	defer signal.Stop(winch)
 
 	p := &proxyState{ptmx: ptmx, up: up, stateDir: stateDirPath(), lastFeed: time.Now(),
-		stop: make(chan struct{}), shutdown: make(chan struct{})}
+		stop: make(chan struct{}), shutdown: make(chan struct{}),
+		drops: make(chan drop, 64)}
+	go p.dropWorker()
 
 	// 外部信号（kill/终端关闭）：转发给子进程并启动限时收尾；终端态由下方 defer 恢复
 	sigs := make(chan os.Signal, 1)
@@ -167,13 +178,15 @@ func (p *proxyState) replay(payload string, bracketed bool) {
 	p.mu.Unlock()
 }
 
-// injectWhenClean 等输入流到达干净点（不在粘贴中、无半截转义序列滞留）再注入，
-// 避免把注入内容劈进用户正在传输的序列中间；最多等 1s 兜底强注。
+// injectWhenClean 等输入流到达干净点再注入：不在粘贴中、无半截转义序列滞留、
+// 也不处于"溢出/中止后未闭合的裸粘贴流"窗口（否则注入的 bpEnd 会提前终结远端粘贴态）。
+// 最多等 1s 兜底强注。
 func (p *proxyState) injectWhenClean(payload string, bracketed bool) {
 	deadline := time.Now().Add(time.Second)
 	for {
 		p.mu.Lock()
-		if (!p.sc.InPaste() && !p.sc.HasPending()) || time.Now().After(deadline) {
+		clean := !p.sc.InPaste() && !p.sc.HasPending() && !p.sc.RawPasteOpen()
+		if clean || time.Now().After(deadline) {
 			p.writePasteLocked(payload, bracketed)
 			p.mu.Unlock()
 			return
@@ -207,27 +220,38 @@ func (p *proxyState) stdinLoop(cmd *exec.Cmd) {
 		n, err := os.Stdin.Read(buf)
 		if n > 0 {
 			chunk := append([]byte{}, buf[:n]...)
+			var enq []drop
 			p.mu.Lock()
 			p.lastFeed = time.Now()
-			// 非括号后备：无括号粘贴模式下拖拽产生的"整块裸路径"
-			if !p.sc.InPaste() && looksLikeBarePathChunk(chunk) {
-				p.mu.Unlock()
-				p.handlePaste(string(chunk), false)
-				continue
+			// 非括号后备：整块裸路径。必须无滞留 pending（否则被扣押的
+			// 用户按键会被排到载荷之后——审计 R2），且语法门须命中；
+			// 不命中则走正常 Feed 逐字节保序透传。
+			if !p.sc.InPaste() && !p.sc.HasPending() && looksLikeBarePathChunk(chunk) {
+				if tokens, ok := p.syntaxGate(string(chunk)); ok {
+					enq = append(enq, drop{string(chunk), tokens, false})
+					p.mu.Unlock()
+					p.enqueue(enq)
+					continue
+				}
 			}
 			evs := p.sc.Feed(chunk)
-			var pastes []string
 			for _, ev := range evs {
 				if ev.Type == EvPaste {
-					pastes = append(pastes, string(ev.Data))
+					payload := string(ev.Data)
+					// 同步判定在锁内按事件序完成（审计 R1）：
+					// 非拖拽粘贴当场回放，与后续 EvForward 保序；
+					// 只有真拖拽候选才延后到队列异步处理。
+					if tokens, ok := p.syntaxGate(payload); ok {
+						enq = append(enq, drop{payload, tokens, true})
+					} else {
+						p.writePasteLocked(payload, true)
+					}
 				} else {
 					p.write(ev.Data)
 				}
 			}
 			p.mu.Unlock()
-			for _, pl := range pastes {
-				p.handlePaste(pl, true)
-			}
+			p.enqueue(enq)
 		}
 		if err != nil {
 			trace("stdin EOF/err: %v → SIGHUP 子进程并启动限时收尾", err)
@@ -242,44 +266,56 @@ func (p *proxyState) stdinLoop(cmd *exec.Cmd) {
 	}
 }
 
-// handlePaste：语法匹配则暂扣载荷，验真/上传全部走异步——输入热路径零阻塞。
-// 验真失败（非文件/网络卷挂死）立即原样回放；上传失败 fail-open 回放 + 通知 + 留痕。
-func (p *proxyState) handlePaste(payload string, bracketed bool) {
+// syntaxGate：零 IO 的同步判定——可安全在锁内调用。
+// 返回 ok=false 表示"不是拖拽，按普通字节保序处理"。
+func (p *proxyState) syntaxGate(payload string) ([]string, bool) {
 	if p.up.Disabled() {
-		p.replay(payload, bracketed)
-		return
+		return nil, false
 	}
-	tokens, ok := parsePasteSyntax(payload)
-	if !ok {
-		p.replay(payload, bracketed)
-		return
+	return parsePasteSyntax(payload)
+}
+
+// enqueue 把拖拽候选按事件序推入队列（stdin 单 goroutine 保证全局有序）。
+// 队列满（64 个在途拖拽，几乎不可能）则降级为当场回放，绝不阻塞输入。
+func (p *proxyState) enqueue(ds []drop) {
+	for _, d := range ds {
+		select {
+		case p.drops <- d:
+		default:
+			p.replay(d.payload, d.bracketed)
+		}
 	}
-	go func() {
+}
+
+// dropWorker 串行消费拖拽队列：注入顺序 = 拖拽顺序（uploader 的承诺在此兑现）。
+// 验真失败（非文件/网络卷挂死）原样回放；上传失败 fail-open 回放 + 通知 + 留痕。
+func (p *proxyState) dropWorker() {
+	for d := range p.drops {
 		start := time.Now()
-		total, ok := verifyLocalFiles(tokens, 500*time.Millisecond)
+		total, ok := verifyLocalFiles(d.tokens, 500*time.Millisecond)
 		if !ok {
-			p.injectWhenClean(payload, bracketed)
-			return
+			p.injectWhenClean(d.payload, d.bracketed)
+			continue
 		}
 		if total > 8<<20 {
 			Notify("moshdrop", fmt.Sprintf("正在上传 %.1f MB → %s …", float64(total)/(1<<20), p.up.target))
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), uploadTimeout(total)+30*time.Second)
-		defer cancel()
-		remotes, err := p.up.Upload(ctx, tokens)
+		remotes, err := p.up.Upload(ctx, d.tokens)
+		cancel()
 		ms := time.Since(start).Milliseconds()
 		if err != nil {
 			Notify("moshdrop", "上传失败，已放行本地路径。原因："+err.Error())
-			logEvent(p.stateDir, dropEvent{Target: p.up.target, Files: baseNames(tokens), Bytes: total, Ms: ms, Ok: false, Err: err.Error()})
-			p.injectWhenClean(payload, bracketed)
-			return
+			logEvent(p.stateDir, dropEvent{Target: p.up.target, Files: baseNames(d.tokens), Bytes: total, Ms: ms, Ok: false, Err: err.Error()})
+			p.injectWhenClean(d.payload, d.bracketed)
+			continue
 		}
 		if total > 8<<20 {
 			Notify("moshdrop", "已送达 ✓")
 		}
-		logEvent(p.stateDir, dropEvent{Target: p.up.target, Files: baseNames(tokens), Bytes: total, Ms: ms, Ok: true})
-		p.injectWhenClean(FormatInjection(remotes), bracketed)
-	}()
+		logEvent(p.stateDir, dropEvent{Target: p.up.target, Files: baseNames(d.tokens), Bytes: total, Ms: ms, Ok: true})
+		p.injectWhenClean(FormatInjection(remotes), d.bracketed)
+	}
 }
 
 // looksLikeBarePathChunk：以 / 开头、无 ESC 及（除空白外）控制字节、长度合理。

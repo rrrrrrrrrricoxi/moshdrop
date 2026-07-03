@@ -130,8 +130,8 @@ func TestSSHCmdUsesCustomArgv(t *testing.T) {
 	if !strings.Contains(joined, "BatchMode=yes") || argv[len(argv)-2] != "host" {
 		t.Fatalf("缺少必备选项或目标: %v", argv)
 	}
-	// 审计 C3 回归：远端命令必须包 sh -c
-	if !strings.HasPrefix(argv[len(argv)-1], "x") && !strings.Contains(argv[len(argv)-1], "sh -c") {
+	// 审计 C3 回归（审查 R9 修正断言）：script 参数原样处于末位
+	if argv[len(argv)-1] != "x" {
 		t.Fatalf("script 位置错误: %q", argv[len(argv)-1])
 	}
 }
@@ -199,4 +199,58 @@ func TestUploaderRealSSH(t *testing.T) {
 	exec.Command("ssh", "-o", "BatchMode=yes", host,
 		"rm -f "+shellQuote(r1[0])+" "+shellQuote(r2[0])).Run()
 	u.Close()
+}
+
+// 审查 R4/R7/R8 回归：远端脚本必须含字节数对账、ln 原子落名、失败清理。
+func TestUploadScriptSafety(t *testing.T) {
+	f := tmpFile(t, "x.png", "HELLO") // 5 字节
+	var script string
+	_, run := fakeRunner(
+		cmdResult{stdout: []byte("/r/.moshdrop")},
+		cmdResult{stdout: []byte("x.png\n")},
+	)
+	u := NewUploader("ccc", nil, t.TempDir())
+	u.run = func(ctx context.Context, stdin io.Reader, argv []string) cmdResult {
+		if len(argv) > 0 && strings.Contains(argv[len(argv)-1], "cat >") {
+			script = argv[len(argv)-1]
+		}
+		return run(ctx, stdin, argv)
+	}
+	if _, err := u.Upload(context.Background(), []string{f}); err != nil {
+		t.Fatal(err)
+	}
+	for _, must := range []string{`-eq 5`, `ln "$t"`, `rm -f "$t"`, "sh -c "} {
+		if !strings.Contains(script, must) {
+			t.Fatalf("远端脚本缺少防线 %q:\n%s", must, script)
+		}
+	}
+	if strings.Contains(script, "\n") {
+		t.Fatal("脚本必须单行（csh 登录 shell 兼容）")
+	}
+}
+
+// 审查 R5 回归：每文件超时绝不静默重试（必败且加倍等待）。
+func TestUploadNoRetryOnTimeout(t *testing.T) {
+	old := minUploadTimeout
+	minUploadTimeout = 50 * time.Millisecond
+	defer func() { minUploadTimeout = old }()
+
+	f := tmpFile(t, "big.bin", "X")
+	calls, _ := fakeRunner()
+	u := NewUploader("ccc", nil, t.TempDir())
+	u.run = func(ctx context.Context, stdin io.Reader, argv []string) cmdResult {
+		*calls = append(*calls, fakeCall{argv: argv, hadStdin: stdin != nil})
+		if len(*calls) == 1 {
+			return cmdResult{stdout: []byte("/r/.moshdrop")} // ensure
+		}
+		<-ctx.Done() // 模拟传输挂死直到超时
+		return cmdResult{err: ctx.Err()}
+	}
+	_, err := u.Upload(context.Background(), []string{f})
+	if err == nil || !strings.Contains(err.Error(), "超时") {
+		t.Fatalf("应报超时: %v", err)
+	}
+	if len(*calls) != 2 {
+		t.Fatalf("超时不得重试, 期望 2 次调用(ensure+1), got %d", len(*calls))
+	}
 }

@@ -11,8 +11,12 @@ func classifySSHError(err error, stderr []byte) error {
 	low := strings.ToLower(s)
 	line := firstLine(s)
 	switch {
-	case strings.Contains(low, "permission denied"):
+	case strings.Contains(low, "permission denied (publickey") ||
+		strings.Contains(low, "permission denied (password") ||
+		strings.Contains(low, "permission denied (keyboard"):
 		return fmt.Errorf("远端拒绝了 ssh 登录（免密密钥失效？）— %s", line)
+	case strings.Contains(low, "permission denied"):
+		return fmt.Errorf("远端文件权限不足（目录不可写？）— %s", line)
 	case strings.Contains(low, "no space left"):
 		return fmt.Errorf("远端磁盘已满 — %s", line)
 	case strings.Contains(low, "could not resolve hostname"):

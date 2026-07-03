@@ -195,3 +195,106 @@ func TestProxyInterceptRealE2E(t *testing.T) {
 	}
 	u.Close()
 }
+
+// 审查 R1 回归：同一 chunk 内「非拦截粘贴 + 尾随字节」必须保持事件序。
+func TestProxyPasteTrailingBytesOrder(t *testing.T) {
+	in := bpS + "just words" + bpE + "TAIL\r"
+	got := runProxyHarness(t, []byte(in), noopUploader(t), func(s string) bool { return len(s) >= len(in) }, 3*time.Second)
+	if got != in {
+		t.Fatalf("粘贴与尾随字节被重排:\n got %q\nwant %q", got, in)
+	}
+}
+
+// 审查 R2 回归：滞留的 ESC（半截标记）绝不能被裸路径回放插队。
+func TestProxyEscThenBarePathOrder(t *testing.T) {
+	u := NewUploader("", nil, t.TempDir()) // disabled：旧代码会走 replay 插队路径
+	inR, inW, _ := os.Pipe()
+	outR, outW, _ := os.Pipe()
+	oldIn, oldOut := os.Stdin, os.Stdout
+	os.Stdin, os.Stdout = inR, outW
+	defer func() { os.Stdin, os.Stdout = oldIn, oldOut }()
+	t.Setenv("MOSHDROP_STATE_DIR", t.TempDir())
+
+	var mu sync.Mutex
+	var buf bytes.Buffer
+	go func() {
+		tmp := make([]byte, 4096)
+		for {
+			n, err := outR.Read(tmp)
+			if n > 0 {
+				mu.Lock()
+				buf.Write(tmp[:n])
+				mu.Unlock()
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	done := make(chan struct{})
+	go func() { RunProxy(rawCat(), u); close(done) }()
+	// 等就绪
+	for i := 0; i < 600; i++ {
+		mu.Lock()
+		ok := strings.Contains(buf.String(), rdy)
+		mu.Unlock()
+		if ok {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	inW.Write([]byte("\x1b"))                       // 孤立 ESC → 被扣押为 pending
+	time.Sleep(10 * time.Millisecond)               // < 50ms 冲刷门槛
+	inW.Write([]byte("/no/such/here.png"))          // 裸路径块
+	want := rdy + "\x1b/no/such/here.png"
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		s := buf.String()
+		mu.Unlock()
+		if len(s) >= len(want) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	inW.Close()
+	<-done
+	outW.Close()
+	mu.Lock()
+	got := buf.String()
+	mu.Unlock()
+	if got != want {
+		t.Fatalf("ESC 被插队:\n got %q\nwant %q", got, want)
+	}
+}
+
+// 审查回归：多次快速拖拽的注入顺序必须等于拖拽顺序（串行队列）。
+func TestProxyMultiDropInjectionOrder(t *testing.T) {
+	f1 := tmpFile(t, "first.png", "1")
+	f2 := tmpFile(t, "second.png", "2")
+	u := NewUploader("ccc", nil, t.TempDir())
+	var calls int
+	var cmu sync.Mutex
+	u.run = func(_ context.Context, stdin io.Reader, argv []string) cmdResult {
+		cmu.Lock()
+		calls++
+		n := calls
+		cmu.Unlock()
+		if n == 1 { // ensure
+			return cmdResult{stdout: []byte("/r/.moshdrop")}
+		}
+		if n == 2 { // 第一个文件的上传故意慢
+			time.Sleep(200 * time.Millisecond)
+			return cmdResult{stdout: []byte("first.png\n")}
+		}
+		return cmdResult{stdout: []byte("second.png\n")}
+	}
+	in := bpS + strings.ReplaceAll(f1, " ", `\ `) + bpE + bpS + strings.ReplaceAll(f2, " ", `\ `) + bpE
+	got := runProxyHarness(t, []byte(in), u,
+		func(s string) bool { return strings.Contains(s, "second.png") }, 8*time.Second)
+	i1 := strings.Index(got, "first.png")
+	i2 := strings.Index(got, "second.png")
+	if i1 < 0 || i2 < 0 || i1 > i2 {
+		t.Fatalf("注入顺序 ≠ 拖拽顺序: %q", got)
+	}
+}
