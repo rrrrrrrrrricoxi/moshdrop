@@ -56,6 +56,9 @@ func main() {
 }
 
 func stateDirPath() string {
+	if d := os.Getenv("MOSHDROP_STATE_DIR"); d != "" {
+		return d
+	}
 	return filepath.Join(os.Getenv("HOME"), ".moshdrop")
 }
 

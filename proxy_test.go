@@ -27,6 +27,7 @@ func rawCat() *exec.Cmd {
 // runProxyHarness 驱动 RunProxy：持续收集输出，直到 pred 满足或超时，再关 stdin 收尾。
 func runProxyHarness(t *testing.T, input []byte, up *Uploader, pred func(string) bool, timeout time.Duration) string {
 	t.Helper()
+	t.Setenv("MOSHDROP_STATE_DIR", t.TempDir()) // 事件日志进临时目录，不污染真实 ~/.moshdrop
 	inR, inW, _ := os.Pipe()
 	outR, outW, _ := os.Pipe()
 	oldIn, oldOut := os.Stdin, os.Stdout
