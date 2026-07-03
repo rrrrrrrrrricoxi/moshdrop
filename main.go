@@ -7,7 +7,8 @@ import (
 	"path/filepath"
 )
 
-const version = "1.0.0"
+// version 由 goreleaser 在发布构建时注入（-X main.version）
+var version = "1.0.0"
 
 func main() {
 	// 语言尽早解析（--help 等子命令也要吃到 config 的 lang）
