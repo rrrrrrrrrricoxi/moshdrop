@@ -28,6 +28,7 @@ func rawCat() *exec.Cmd {
 func runProxyHarness(t *testing.T, input []byte, up *Uploader, pred func(string) bool, timeout time.Duration) string {
 	t.Helper()
 	t.Setenv("MOSHDROP_STATE_DIR", t.TempDir()) // 事件日志进临时目录，不污染真实 ~/.moshdrop
+	t.Setenv("MOSHDROP_MUTE_NOTIFY", "1")       // 模拟故障绝不骚扰真实通知中心
 	inR, inW, _ := os.Pipe()
 	outR, outW, _ := os.Pipe()
 	oldIn, oldOut := os.Stdin, os.Stdout
@@ -296,5 +297,27 @@ func TestProxyMultiDropInjectionOrder(t *testing.T) {
 	i2 := strings.Index(got, "second.png")
 	if i1 < 0 || i2 < 0 || i1 > i2 {
 		t.Fatalf("注入顺序 ≠ 拖拽顺序: %q", got)
+	}
+}
+
+// 审查回归：非括号（bare）拦截成功路径——注入远端路径且不带括号标记。
+func TestProxyBareInterceptWithFake(t *testing.T) {
+	f := tmpFile(t, "barefile.png", "B")
+	_, run := fakeRunner(
+		cmdResult{stdout: []byte("/r/.moshdrop")},
+		cmdResult{stdout: []byte("barefile.png\n")},
+	)
+	u := NewUploader("ccc", nil, t.TempDir())
+	u.run = run
+	got := runProxyHarness(t, []byte(f), u,
+		func(s string) bool { return strings.Contains(s, "/r/.moshdrop/barefile.png") }, 5*time.Second)
+	if strings.Contains(got, filepath.Dir(f)) {
+		t.Fatalf("本地路径泄漏: %q", got)
+	}
+	if strings.Contains(got, bpS) {
+		t.Fatalf("bare 注入不得携带括号标记: %q", got)
+	}
+	if !strings.Contains(got, "/r/.moshdrop/barefile.png") {
+		t.Fatalf("未注入远端路径: %q", got)
 	}
 }

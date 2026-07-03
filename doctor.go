@@ -57,6 +57,7 @@ func runDoctor(args []string) int {
 	stateDir := stateDirPath()
 	_ = os.MkdirAll(stateDir, 0o700)
 	u := NewUploader(target, sshArgv, stateDir)
+	defer u.Close() // 任何 early-return 都不留 ControlMaster 残连
 
 	// 3) ControlPath 长度（unix socket 上限 104）
 	cp := strings.Replace(u.ctlPath, "%C", strings.Repeat("x", 40), 1)
@@ -89,14 +90,15 @@ func runDoctor(args []string) int {
 		return 1
 	}
 	sum := sha256.Sum256(content)
-	res := u.run(ctx, nil, u.sshCmd(`sh -c 'shasum -a 256 `+shellQuote(remotes[0])+` 2>/dev/null || sha256sum `+shellQuote(remotes[0])+`'`))
+	// 路径引用嵌套：内层脚本单独构造后整体 shellQuote，含空格路径也正确
+	hashScript := `shasum -a 256 ` + shellQuote(remotes[0]) + ` 2>/dev/null || sha256sum ` + shellQuote(remotes[0])
+	res := u.run(ctx, nil, u.sshCmd("sh -c "+shellQuote(hashScript)))
 	remoteSum := ""
 	if f := strings.Fields(string(res.stdout)); len(f) > 0 {
 		remoteSum = f[0]
 	}
 	step("探针端到端校验", remoteSum == hex.EncodeToString(sum[:]), remotes[0])
-	u.run(ctx, nil, u.sshCmd(`sh -c 'rm -f `+shellQuote(remotes[0])+`'`))
-	u.Close()
+	u.run(ctx, nil, u.sshCmd("sh -c "+shellQuote("rm -f "+shellQuote(remotes[0]))))
 
 	// 6) 最近一次失败留痕
 	if hint := lastFailureHint(stateDir); hint != "" {
