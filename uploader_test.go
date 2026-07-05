@@ -85,10 +85,10 @@ func TestEnsureRetryNotSticky(t *testing.T) {
 func TestUploadSilentRetryOnce(t *testing.T) {
 	f := tmpFile(t, "a.txt", "X")
 	calls, run := fakeRunner(
-		cmdResult{stdout: []byte("/r/.moshdrop")},                                     // ensure
-		cmdResult{err: fmt.Errorf("exit 255"), stderr: []byte("Broken pipe")},         // upload 失败
-		cmdResult{stdout: []byte("/r/.moshdrop")},                                     // 重建 ensure
-		cmdResult{stdout: []byte("a.txt\n")},                                          // 重试成功
+		cmdResult{stdout: []byte("/r/.moshdrop")},                             // ensure
+		cmdResult{err: fmt.Errorf("exit 255"), stderr: []byte("Broken pipe")}, // upload 失败
+		cmdResult{stdout: []byte("/r/.moshdrop")},                             // 重建 ensure
+		cmdResult{stdout: []byte("a.txt\n")},                                  // 重试成功
 	)
 	u := NewUploader("ccc", nil, t.TempDir())
 	u.run = run

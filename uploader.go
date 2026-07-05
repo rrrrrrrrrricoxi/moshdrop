@@ -48,8 +48,9 @@ type Uploader struct {
 	mu        sync.Mutex // 串行化 ensure 与上传
 	remoteDir string     // 成功后缓存；失败不缓存 → 下次自动重试
 
-	remoteName string // 远端落点（$HOME 下相对路径），默认 .moshdrop
-	ttlDays    int    // 远端保质期（天），0=不清理
+	remoteName        string // 远端落点（$HOME 下相对路径），默认 .moshdrop
+	ttlDays           int    // 远端保质期（天），0=不清理
+	maxInterceptBytes int64  // 拖拽自动上传大小上限（字节），0=不限制
 
 	run func(ctx context.Context, stdin io.Reader, argv []string) cmdResult
 }
@@ -59,12 +60,13 @@ func NewUploader(target string, sshArgv []string, localStateDir string) *Uploade
 		sshArgv = []string{"ssh"}
 	}
 	u := &Uploader{
-		target:     target,
-		sshArgv:    sshArgv,
-		ctlPath:    filepath.Join(ctlSocketDir(localStateDir), "cm-%C"),
-		remoteName: ".moshdrop",
-		ttlDays:    7,
-		run:        realRun,
+		target:            target,
+		sshArgv:           sshArgv,
+		ctlPath:           filepath.Join(ctlSocketDir(localStateDir), "cm-%C"),
+		remoteName:        ".moshdrop",
+		ttlDays:           7,
+		maxInterceptBytes: int64(defaultConfig().MaxInterceptMB) << 20, // 镜像默认配置：未 ApplyConfig 也安全
+		run:               realRun,
 	}
 	u.disabled.Store(target == "")
 	return u
@@ -74,6 +76,7 @@ func NewUploader(target string, sshArgv []string, localStateDir string) *Uploade
 func (u *Uploader) ApplyConfig(cfg Config) {
 	u.remoteName = cfg.RemoteDir
 	u.ttlDays = cfg.TTLDays
+	u.maxInterceptBytes = int64(cfg.MaxInterceptMB) << 20
 }
 
 // dirExpr 生成远端目录的 shell 表达式："$HOME"/'name'（拼接式，含空格也安全）。
@@ -281,7 +284,7 @@ func sanitizeName(p string) string {
 	return out
 }
 
-// shellQuote 单引号安全包裹：' → '\''（POSIX sh/fish/csh 皆兼容）
+// shellQuote 单引号安全包裹：' → '\”（POSIX sh/fish/csh 皆兼容）
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

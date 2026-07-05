@@ -17,7 +17,7 @@ func writeConfig(t *testing.T, content string) string {
 
 func TestLoadConfigDefaults(t *testing.T) {
 	cfg := LoadConfig(t.TempDir(), "ccc") // 无配置文件
-	if cfg.TTLDays != 7 || !cfg.Intercept || cfg.RemoteDir != ".moshdrop" || cfg.Lang != "" {
+	if cfg.TTLDays != 7 || !cfg.Intercept || cfg.RemoteDir != ".moshdrop" || cfg.Lang != "" || cfg.MaxInterceptMB != 50 {
 		t.Fatalf("默认值错误: %+v", cfg)
 	}
 }
@@ -63,5 +63,42 @@ func TestLoadConfigRemoteDirEscape(t *testing.T) {
 	dir := writeConfig(t, "remote_dir = inbox/shots\n")
 	if cfg := LoadConfig(dir, "x"); cfg.RemoteDir != "inbox/shots" {
 		t.Fatalf("合法子路径被误拒: %+v", cfg)
+	}
+}
+
+// 行内注释：value 后跟「空白 + #」注释必须被剥除（README 示例正是这种写法）。
+func TestLoadConfigInlineComments(t *testing.T) {
+	dir := writeConfig(t, "ttl_days = 30 # keep a month\nremote_dir = drops   # per-host style\nmax_intercept_mb = 100 # cap\nlang = zh # chinese\n")
+	cfg := LoadConfig(dir, "x")
+	if cfg.TTLDays != 30 {
+		t.Fatalf("行内注释未剥除，ttl_days=%d", cfg.TTLDays)
+	}
+	if cfg.RemoteDir != "drops" {
+		t.Fatalf("行内注释未剥除，remote_dir=%q", cfg.RemoteDir)
+	}
+	if cfg.MaxInterceptMB != 100 {
+		t.Fatalf("行内注释未剥除，max_intercept_mb=%d", cfg.MaxInterceptMB)
+	}
+	if cfg.Lang != "zh" {
+		t.Fatalf("行内注释未剥除，lang=%q", cfg.Lang)
+	}
+	// value 内部不带空白的 # 不算注释（不误伤）。
+	dir2 := writeConfig(t, "remote_dir = a#b\n")
+	if cfg := LoadConfig(dir2, "x"); cfg.RemoteDir != "a#b" {
+		t.Fatalf("非注释的 # 被误剥，remote_dir=%q", cfg.RemoteDir)
+	}
+}
+
+// max_intercept_mb：默认 50、全局解析、per-host 覆盖、0=不限制。
+func TestLoadConfigMaxInterceptMB(t *testing.T) {
+	if cfg := LoadConfig(t.TempDir(), "x"); cfg.MaxInterceptMB != 50 {
+		t.Fatalf("默认 max_intercept_mb 应为 50: %+v", cfg)
+	}
+	dir := writeConfig(t, "max_intercept_mb = 200\nhost.ccc.max_intercept_mb = 0\n")
+	if cfg := LoadConfig(dir, "other"); cfg.MaxInterceptMB != 200 {
+		t.Fatalf("全局 max_intercept_mb 解析错误: %+v", cfg)
+	}
+	if cfg := LoadConfig(dir, "ccc"); cfg.MaxInterceptMB != 0 {
+		t.Fatalf("host 覆盖 max_intercept_mb=0 错误: %+v", cfg)
 	}
 }

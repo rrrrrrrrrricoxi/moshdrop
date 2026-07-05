@@ -13,10 +13,12 @@ type Config struct {
 	Intercept bool   // 拖拽拦截总开关；off = 真·纯透传
 	Lang      string // 用户可见文案语言：""/en | zh
 	RemoteDir string // 远端落点，$HOME 下相对路径
+
+	MaxInterceptMB int // 拖拽自动上传的大小上限（MB），超过则放行本地路径+通知；0=不限制
 }
 
 func defaultConfig() Config {
-	return Config{TTLDays: 7, Intercept: true, RemoteDir: ".moshdrop"}
+	return Config{TTLDays: 7, Intercept: true, RemoteDir: ".moshdrop", MaxInterceptMB: 50}
 }
 
 // LoadConfig 读 stateDir/config：全局键 + host.<name>.<key> 覆盖。
@@ -41,6 +43,10 @@ func LoadConfig(stateDir, host string) Config {
 			if safeRemoteDir(val) {
 				cfg.RemoteDir = val
 			}
+		case "max_intercept_mb":
+			if n, err := strconv.Atoi(val); err == nil && n >= 0 {
+				cfg.MaxInterceptMB = n
+			}
 		}
 	}
 	hostPrefix := "host." + host + "."
@@ -56,7 +62,7 @@ func LoadConfig(stateDir, host string) Config {
 				continue
 			}
 			key := strings.TrimSpace(line[:eq])
-			val := strings.TrimSpace(line[eq+1:])
+			val := strings.TrimSpace(stripInlineComment(line[eq+1:]))
 			isHost := strings.HasPrefix(key, "host.")
 			if round == 0 && !isHost {
 				apply(key, val)
@@ -77,6 +83,17 @@ func parseBool(s string, def bool) bool {
 		return false
 	}
 	return def
+}
+
+// stripInlineComment 剥除「空白 + #」起的行内注释（整行 # 注释在上面已跳过）。
+// 让 README 里 `key = val   # 说明` 这种写法真正生效，而不是把注释并进值里。
+func stripInlineComment(s string) string {
+	for i := 1; i < len(s); i++ {
+		if s[i] == '#' && (s[i-1] == ' ' || s[i-1] == '\t') {
+			return s[:i]
+		}
+	}
+	return s
 }
 
 // safeRemoteDir: 只允许 $HOME 下的相对路径，杜绝逃逸。

@@ -50,6 +50,7 @@ ttl_days = 7          # auto-clean remote files older than N days (0 = keep fore
 intercept = on        # off = pure passthrough, drag-upload disabled
 lang = en             # en | zh
 remote_dir = .moshdrop
+max_intercept_mb = 50 # skip auto-upload above this size; paste local path + notice instead (0 = no limit)
 
 host.workbox.remote_dir = drops    # per-host overrides
 host.workbox.intercept = off
@@ -65,6 +66,7 @@ you ──▶ moshdrop ──▶ mosh ──▶ remote
 
 - **Almost all the time it does nothing.** Keystrokes pass straight through, untouched and in order. (One deliberate exception: a *lone* ESC press is held ~50 ms to tell it apart from a paste marker — the same disambiguation trick as vim's `ttimeoutlen`. Complete escape sequences like arrow keys are not delayed.)
 - **When you drag a file in**, your terminal actually just "types" the file's local path as a paste. moshdrop recognizes path-shaped pastes, double-checks every path is a real file on your local disk, quietly uploads them over a second ssh connection, and pastes the *remote* path instead.
+- **Files over `max_intercept_mb` (default 50 MB) are left alone** — the local path is pasted unchanged and a notice tells you to `scp` it yourself, so a stray huge drag never ties up your session over a weak link.
 - **If an upload fails** — no network, remote disk full — your original paste comes through unchanged once the attempt gives up (seconds for connection errors; up to the size-based timeout for a big file on a dying link), plus a notification saying why in plain words. Your typing is never blocked either way. `~/.moshdrop/events.log` keeps a one-line record per drop.
 - **Files don't land half-written.** Uploads go to a hidden temp name, the byte count is checked (transport integrity is ssh's job), and only then is the file atomically linked to its real name. A connection dying mid-transfer leaves at worst a hidden temp file, swept on the next connect.
 

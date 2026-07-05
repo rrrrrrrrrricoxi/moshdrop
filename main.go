@@ -93,7 +93,7 @@ func printHelp() {
 工作方式: 拖进终端的本地文件自动上传到远端（默认 ~/.moshdrop/），
 输入流里出现的是远端可用路径；其余输入逐字节透传。
 失败时原样放行你的输入并弹系统通知（详情见 ~/.moshdrop/events.log）。
-配置: ~/.moshdrop/config（ttl_days / intercept / lang / remote_dir，支持 host.<别名>.键 覆盖）
+配置: ~/.moshdrop/config（ttl_days / intercept / lang / remote_dir / max_intercept_mb，支持 host.<别名>.键 覆盖）
 `)
 		return
 	}
@@ -109,6 +109,6 @@ How it works: local files dragged into the terminal are uploaded to the remote
 (default ~/.moshdrop/) and your input stream receives a usable remote path.
 Everything else passes through byte-for-byte. On failure your original paste is
 passed through untouched, plus a system notification (see ~/.moshdrop/events.log).
-Config: ~/.moshdrop/config (ttl_days / intercept / lang / remote_dir; host.<alias>.key overrides)
+Config: ~/.moshdrop/config (ttl_days / intercept / lang / remote_dir / max_intercept_mb; host.<alias>.key overrides)
 `)
 }

@@ -306,6 +306,10 @@ func (p *proxyState) enqueue(ds []drop) {
 	}
 }
 
+// slowNotifyDelay：上传超过此时长仍未完成才弹「上传中」——按时间触发（与文件大小无关），
+// 治「弱网上传数十秒毫无反应 → 用户走神切窗格」的根因。可在测试中调小。
+var slowNotifyDelay = 1500 * time.Millisecond
+
 // dropWorker 串行消费拖拽队列：注入顺序 = 拖拽顺序（uploader 的承诺在此兑现）。
 // 验真失败（非文件/网络卷挂死）原样回放；上传失败 fail-open 回放 + 通知 + 留痕。
 func (p *proxyState) dropWorker() {
@@ -316,20 +320,36 @@ func (p *proxyState) dropWorker() {
 			p.injectWhenClean(d.payload, d.bracketed)
 			continue
 		}
-		if total > 8<<20 {
-			Notify("moshdrop", fmt.Sprintf(msg("n.uploading"), float64(total)/(1<<20), p.up.target))
+		// 大文件护栏：超过上限不自动上传（弱网传大文件会拖很久、占满带宽），
+		// 原样放行本地路径 + 通知用户手动 scp。0=不限制。
+		if limit := p.up.maxInterceptBytes; limit > 0 && total > limit {
+			Notify("moshdrop", fmt.Sprintf(msg("n.toobig"), float64(total)/(1<<20), limit>>20))
+			p.injectWhenClean(d.payload, d.bracketed)
+			continue
 		}
+		// 迟到反馈：上传超过 slowNotifyDelay 仍未完成才弹「上传中」，治弱网长时间静默的根因。
+		uploadingShown := make(chan struct{})
+		announce := time.AfterFunc(slowNotifyDelay, func() {
+			Notify("moshdrop", fmt.Sprintf(msg("n.uploading"), float64(total)/(1<<20), p.up.target))
+			close(uploadingShown)
+		})
 		ctx, cancel := context.WithTimeout(context.Background(), uploadTimeout(total)+30*time.Second)
 		remotes, err := p.up.Upload(ctx, d.tokens)
 		cancel()
 		ms := time.Since(start).Milliseconds()
+		// Stop()==false ⇒ 定时器已触发、「上传中」goroutine 已启动；等它真弹完再往下，
+		// 保证「上传中」严格早于「已送达/失败」（两条横幅跨 goroutine，否则毫秒级窗口会倒序）。
+		announced := !announce.Stop()
+		if announced {
+			<-uploadingShown
+		}
 		if err != nil {
 			Notify("moshdrop", fmt.Sprintf(msg("n.failed"), err.Error()))
 			logEvent(p.stateDir, dropEvent{Target: p.up.target, Files: baseNames(d.tokens), Bytes: total, Ms: ms, Ok: false, Err: err.Error()})
 			p.injectWhenClean(d.payload, d.bracketed)
 			continue
 		}
-		if total > 8<<20 {
+		if announced {
 			Notify("moshdrop", msg("n.delivered"))
 		}
 		logEvent(p.stateDir, dropEvent{Target: p.up.target, Files: baseNames(d.tokens), Bytes: total, Ms: ms, Ok: true})

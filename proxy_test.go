@@ -244,9 +244,9 @@ func TestProxyEscThenBarePathOrder(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	inW.Write([]byte("\x1b"))                       // 孤立 ESC → 被扣押为 pending
-	time.Sleep(10 * time.Millisecond)               // < 50ms 冲刷门槛
-	inW.Write([]byte("/no/such/here.png"))          // 裸路径块
+	inW.Write([]byte("\x1b"))              // 孤立 ESC → 被扣押为 pending
+	time.Sleep(10 * time.Millisecond)      // < 50ms 冲刷门槛
+	inW.Write([]byte("/no/such/here.png")) // 裸路径块
 	want := rdy + "\x1b/no/such/here.png"
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
