@@ -72,7 +72,7 @@ func NewUploader(target string, sshArgv []string, localStateDir string) *Uploade
 	return u
 }
 
-// ApplyConfig 应用远端目录与保质期（拦截开关由调用方另行处置——doctor 不受其影响）。
+// ApplyConfig 应用远端目录、保质期与大文件上限（拦截开关由调用方另行处置——doctor 不受其影响）。
 func (u *Uploader) ApplyConfig(cfg Config) {
 	u.remoteName = cfg.RemoteDir
 	u.ttlDays = cfg.TTLDays
@@ -284,7 +284,7 @@ func sanitizeName(p string) string {
 	return out
 }
 
-// shellQuote 单引号安全包裹：' → '\”（POSIX sh/fish/csh 皆兼容）
+// shellQuote 单引号安全包裹：' → '\''（POSIX sh/fish/csh 皆兼容）
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

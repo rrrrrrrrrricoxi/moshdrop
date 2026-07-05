@@ -12,19 +12,25 @@ func setLang(l string) {
 	}
 }
 
-func msg(key string) string {
-	if curLang == "" {
-		if os.Getenv("MOSHDROP_LANG") == "zh" {
-			curLang = "zh"
-		} else {
-			curLang = "en"
-		}
+// effectiveLang 只读地解析生效语言：setLang 设过的 curLang 优先，否则看环境变量，兜底 en。
+// 关键：绝不写 curLang——msg 会被多个 goroutine（含迟到通知的 AfterFunc）并发调用，
+// 惰性写全局变量会造成 data race（-race 在测试里因预先固定 curLang 而看不到）。
+func effectiveLang() string {
+	if curLang != "" {
+		return curLang
 	}
+	if os.Getenv("MOSHDROP_LANG") == "zh" {
+		return "zh"
+	}
+	return "en"
+}
+
+func msg(key string) string {
 	m, ok := messages[key]
 	if !ok {
 		return key
 	}
-	if curLang == "zh" {
+	if effectiveLang() == "zh" {
 		return m[1]
 	}
 	return m[0]
@@ -49,7 +55,7 @@ var messages = map[string][2]string{
 	"n.uploading": {"uploading %.1f MB → %s …", "正在上传 %.1f MB → %s …"},
 	"n.delivered": {"delivered ✓", "已送达 ✓"},
 	"n.failed":    {"upload failed; your original paste was passed through. Reason: %s", "上传失败，已放行本地路径。原因：%s"},
-	"n.toobig":    {"file too large (%.1f MB > %d MB); not uploaded — scp it manually", "文件过大（%.1f MB，超过 %d MB），未自动上传——请手动 scp"},
+	"n.toobig":    {"drag is %.1f MB, over the %d MB limit; not auto-uploaded — scp it manually", "这次拖拽共 %.1f MB，超过 %d MB 上限，未自动上传——请手动 scp"},
 	// main.go
 	"m.notarget": {"moshdrop: cannot determine ssh target; drag-upload disabled (mosh itself unaffected):", "moshdrop: 未能确定 ssh 目标，拖拽上传停用（mosh 本身不受影响）:"},
 	// paste.go

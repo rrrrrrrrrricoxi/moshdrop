@@ -76,8 +76,7 @@ func stateDirPath() string {
 }
 
 func curLangIsZH() bool {
-	_ = msg("d.title") // 触发一次语言解析
-	return curLang == "zh"
+	return effectiveLang() == "zh"
 }
 
 func printHelp() {

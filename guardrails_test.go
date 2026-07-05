@@ -54,9 +54,27 @@ func TestProxyOversizeCeilingPassesThrough(t *testing.T) {
 	if got != in {
 		t.Fatalf("超限文件必须原样放行（保留括号标记）:\n got %q\nwant %q", got, in)
 	}
-	if !anyContains(getNotes(), "too large") {
-		t.Fatalf("超限拖拽必须弹「too big」告知用户手动 scp，实得通知: %v", getNotes())
+	if !anyContains(getNotes(), "over the") {
+		t.Fatalf("超限拖拽必须弹「超过上限」告知用户手动 scp，实得通知: %v", getNotes())
 	}
+}
+
+// 并发安全：msg() 绝不能写全局 curLang（迟到通知的 AfterFunc 会与 Upload 内的 msg 并发）。
+// 未配置 lang（curLang==""）时，旧的惰性写实现会在 -race 下报 data race。
+func TestMsgConcurrentNoRace(t *testing.T) {
+	oldLang := curLang
+	curLang = "" // 模拟无 lang 配置的默认态
+	defer func() { curLang = oldLang }()
+	var wg sync.WaitGroup
+	for i := 0; i < 64; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = msg("n.uploading")
+			_ = msg("n.toobig")
+		}()
+	}
+	wg.Wait()
 }
 
 // 边界：文件大小恰等于上限（未超过）应照常上传——守住 `>` 不被改成 `>=`。

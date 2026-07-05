@@ -44,7 +44,8 @@ func LoadConfig(stateDir, host string) Config {
 				cfg.RemoteDir = val
 			}
 		case "max_intercept_mb":
-			if n, err := strconv.Atoi(val); err == nil && n >= 0 {
+			// 上界防 int64(n)<<20 溢出成负数（会被误判为「不限制」）；1<<33 MB(≈8 PB) 远超任何真实文件。
+			if n, err := strconv.Atoi(val); err == nil && n >= 0 && n < 1<<33 {
 				cfg.MaxInterceptMB = n
 			}
 		}
