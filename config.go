@@ -52,8 +52,8 @@ func LoadConfig(stateDir, host string) Config {
 	}
 	hostPrefix := "host." + host + "."
 	// 两轮：先全局，再 host 覆盖（顺序无关）
-	for round := 0; round < 2; round++ {
-		for _, line := range strings.Split(string(b), "\n") {
+	for round := range 2 {
+		for line := range strings.SplitSeq(string(b), "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" || strings.HasPrefix(line, "#") {
 				continue
@@ -102,7 +102,7 @@ func safeRemoteDir(p string) bool {
 	if p == "" || strings.HasPrefix(p, "/") || strings.HasPrefix(p, "~") {
 		return false
 	}
-	for _, seg := range strings.Split(p, "/") {
+	for seg := range strings.SplitSeq(p, "/") {
 		if seg == ".." || seg == "" {
 			return false
 		}

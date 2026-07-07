@@ -146,7 +146,7 @@ func (u *Uploader) sshCmd(script string) []string {
 // 顺带清理超过 1 小时的孤儿临时文件（SIGKILL 等极端路径的残留）。
 func (u *Uploader) ensure(ctx context.Context) error {
 	if u.Disabled() {
-		return fmt.Errorf(msg("up.notarget"))
+		return errors.New(msg("up.notarget"))
 	}
 	if u.remoteDir != "" {
 		return nil
@@ -219,10 +219,7 @@ func (u *Uploader) Upload(ctx context.Context, locals []string) ([]string, error
 // uploadTimeout 按大小自适应：保守按 100KB/s 估算（死链由 ServerAlive 提前掐断）。
 func uploadTimeout(size int64) time.Duration {
 	d := time.Duration(size/(100<<10)) * time.Second
-	if d < minUploadTimeout {
-		d = minUploadTimeout
-	}
-	return d
+	return max(d, minUploadTimeout)
 }
 
 // uploadOne：单次 ssh 往返完成"写临时名 → 字节数校验 → ln 原子落名 → 回显最终名"。
@@ -263,7 +260,7 @@ func (u *Uploader) uploadOne(ctx context.Context, localPath string) (string, err
 	// 只剥协议约定的那一个尾换行——文件名自身的首尾空白必须原样保留
 	out := strings.TrimSuffix(string(res.stdout), "\n")
 	if out == "" {
-		return "", fmt.Errorf(msg("up.noecho"))
+		return "", errors.New(msg("up.noecho"))
 	}
 	return out, nil
 }
@@ -284,7 +281,7 @@ func sanitizeName(p string) string {
 	return out
 }
 
-// shellQuote 单引号安全包裹：' → '\''（POSIX sh/fish/csh 皆兼容）
+// shellQuote 单引号安全包裹：' → '\”（POSIX sh/fish/csh 皆兼容）
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

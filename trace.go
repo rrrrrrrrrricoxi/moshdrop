@@ -10,7 +10,7 @@ import (
 )
 
 // trace: 临时诊断钩子。MOSHDROP_TRACE=<file> 时把关键站点追加写入文件。
-func trace(format string, a ...interface{}) {
+func trace(format string, a ...any) {
 	p := os.Getenv("MOSHDROP_TRACE")
 	if p == "" {
 		return
