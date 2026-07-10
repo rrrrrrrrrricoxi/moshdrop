@@ -27,6 +27,12 @@ func rawCat() *exec.Cmd {
 // runProxyHarness 驱动 RunProxy：持续收集输出，直到 pred 满足或超时，再关 stdin 收尾。
 func runProxyHarness(t *testing.T, input []byte, up *Uploader, pred func(string) bool, timeout time.Duration) string {
 	t.Helper()
+	return runProxyHarnessFn(t, up, func(feed func([]byte)) { feed(input) }, pred, timeout)
+}
+
+// runProxyHarnessFn 同款鹰架，但喂输入交给 drive 回调——可分段发送、与替身编排时序（Ctrl+V 保序用例）。
+func runProxyHarnessFn(t *testing.T, up *Uploader, drive func(feed func([]byte)), pred func(string) bool, timeout time.Duration) string {
+	t.Helper()
 	t.Setenv("MOSHDROP_STATE_DIR", t.TempDir()) // 事件日志进临时目录，不污染真实 ~/.moshdrop
 	t.Setenv("MOSHDROP_MUTE_NOTIFY", "1")       // 模拟故障绝不骚扰真实通知中心
 	inR, inW, _ := os.Pipe()
@@ -71,7 +77,7 @@ func runProxyHarness(t *testing.T, input []byte, up *Uploader, pred func(string)
 	if start < 0 {
 		t.Fatal("替身未就绪")
 	}
-	inW.Write(input)
+	drive(func(b []byte) { inW.Write(b) })
 
 	out := func() string {
 		mu.Lock()

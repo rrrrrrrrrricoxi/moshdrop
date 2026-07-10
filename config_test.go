@@ -102,3 +102,16 @@ func TestLoadConfigMaxInterceptMB(t *testing.T) {
 		t.Fatalf("host 覆盖 max_intercept_mb=0 错误: %+v", cfg)
 	}
 }
+
+func TestLoadConfigPasteKey(t *testing.T) {
+	if cfg := LoadConfig(t.TempDir(), "x"); !cfg.PasteKey {
+		t.Fatalf("默认 paste_key 应为 on: %+v", cfg)
+	}
+	dir := writeConfig(t, "paste_key = off\nhost.ccc.paste_key = on\n")
+	if cfg := LoadConfig(dir, "other"); cfg.PasteKey {
+		t.Fatalf("全局 paste_key=off 解析错误: %+v", cfg)
+	}
+	if cfg := LoadConfig(dir, "ccc"); !cfg.PasteKey {
+		t.Fatalf("host 覆盖 paste_key=on 错误: %+v", cfg)
+	}
+}

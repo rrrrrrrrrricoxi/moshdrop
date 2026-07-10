@@ -52,10 +52,15 @@ var messages = map[string][2]string{
 	"up.timeout":  {"upload timed out (%s %.1f MB; link too slow or dead)", "上传超时（%s %.1f MB，网络太慢或已断开）"},
 	"up.noecho":   {"remote did not echo final filename", "远端未回显文件名"},
 	// proxy.go 通知
-	"n.uploading": {"uploading %.1f MB → %s …", "正在上传 %.1f MB → %s …"},
-	"n.delivered": {"delivered ✓", "已送达 ✓"},
-	"n.failed":    {"upload failed; your original paste was passed through. Reason: %s", "上传失败，已放行本地路径。原因：%s"},
-	"n.toobig":    {"drag is %.1f MB, over the %d MB limit; not auto-uploaded — scp it manually", "这次拖拽共 %.1f MB，超过 %d MB 上限，未自动上传——请手动 scp"},
+	"n.uploading":  {"uploading %.1f MB → %s …", "正在上传 %.1f MB → %s …"},
+	"n.delivered":  {"delivered ✓", "已送达 ✓"},
+	"n.failed":     {"upload failed; your original paste was passed through. Reason: %s", "上传失败，已放行本地路径。原因：%s"},
+	"n.toobig":     {"drag is %.1f MB, over the %d MB limit; not auto-uploaded — scp it manually", "这次拖拽共 %.1f MB，超过 %d MB 上限，未自动上传——请手动 scp"},
+	"n.clipslow":   {"clipboard had no image — that Ctrl+V was held back (slow clipboard read), not forwarded", "剪贴板里没有图片——这次 Ctrl+V 因剪贴板响应慢已被扣下，未转发"},
+	"n.clipfailed": {"clipboard image upload failed: %s", "剪贴板图片上传失败：%s"},
+	"n.cliptoobig": {"clipboard image is %.1f MB, over the %d MB limit; not uploaded — save it to a file and scp it", "剪贴板图片 %.1f MB，超过 %d MB 上限，未上传——请存成文件后手动 scp"},
+	"r.queuefull":  {"too many transfers in flight", "在途传输过多"},
+	"r.tmpgone":    {"temp file vanished", "临时文件消失"},
 	// main.go
 	"m.notarget": {"moshdrop: cannot determine ssh target; drag-upload disabled (mosh itself unaffected):", "moshdrop: 未能确定 ssh 目标，拖拽上传停用（mosh 本身不受影响）:"},
 	// paste.go

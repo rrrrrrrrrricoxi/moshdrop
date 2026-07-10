@@ -50,6 +50,8 @@ func main() {
 	if !cfg.Intercept {
 		up.disabled.Store(true) // 配置关拦截 = 真·纯透传
 	}
+	pasteKeyEnabled = cfg.PasteKey // 会话内 Ctrl+V 贴图（uploader 停用时门上还有一道 Disabled 闸）
+	go sweepStaleClipTemps()       // 上次中途死亡残留的截图临时目录，启动时兜底清扫
 	if !up.Disabled() {
 		go up.Prewarm()
 	}
@@ -90,9 +92,10 @@ func printHelp() {
   moshdrop --version | --help
 
 工作方式: 拖进终端的本地文件自动上传到远端（默认 ~/.moshdrop/），
-输入流里出现的是远端可用路径；其余输入逐字节透传。
-失败时原样放行你的输入并弹系统通知（详情见 ~/.moshdrop/events.log）。
-配置: ~/.moshdrop/config（ttl_days / intercept / lang / remote_dir / max_intercept_mb，支持 host.<别名>.键 覆盖）
+输入流里出现的是远端可用路径；剪贴板里有图时按 Ctrl+V 同样直接上传；
+其余输入逐字节透传。失败时原样放行你的输入并弹系统通知（剪贴板贴图无可放行物，
+只通知；详情见 ~/.moshdrop/events.log）。
+配置: ~/.moshdrop/config（ttl_days / intercept / lang / remote_dir / max_intercept_mb / paste_key，支持 host.<别名>.键 覆盖）
 `)
 		return
 	}
@@ -106,8 +109,10 @@ Usage:
 
 How it works: local files dragged into the terminal are uploaded to the remote
 (default ~/.moshdrop/) and your input stream receives a usable remote path.
+Press Ctrl+V with an image in the clipboard to upload it the same way.
 Everything else passes through byte-for-byte. On failure your original paste is
-passed through untouched, plus a system notification (see ~/.moshdrop/events.log).
-Config: ~/.moshdrop/config (ttl_days / intercept / lang / remote_dir / max_intercept_mb; host.<alias>.key overrides)
+passed through untouched (clipboard-image path: notification only), plus a
+system notification (see ~/.moshdrop/events.log).
+Config: ~/.moshdrop/config (ttl_days / intercept / lang / remote_dir / max_intercept_mb / paste_key; host.<alias>.key overrides)
 `)
 }

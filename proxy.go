@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -33,12 +34,24 @@ type proxyState struct {
 	kick  chan struct{} // scanner 有滞留状态时唤醒 idle 巡逻（平时定时器熟睡，空载 0% CPU）
 }
 
-// drop 是一次已通过语法门的拖拽候选。
+// drop 是一次已通过语法门的拖拽候选（或会话内 Ctrl+V 落地的剪贴板图片）。
 type drop struct {
 	payload   string
 	tokens    []string
 	bracketed bool
+	noReplay  bool   // 失败时不回放 payload——剪贴板贴图无本地路径可放行，只通知
+	cleanup   string // 非空：处理完毕删除该临时目录（剪贴板图片的落地处）
+	source    string // 事件日志来源标注；空=拖拽
 }
+
+// Ctrl+V 贴图（config: paste_key）：孤立 0x16 触发本地剪贴板探测。
+// pasteProbeDeadline 是探测硬时限——超时即承诺拦截（无图报错远快于此值）。均可在测试中调整。
+const ctrlV = 0x16
+
+var (
+	pasteKeyEnabled    = true
+	pasteProbeDeadline = 200 * time.Millisecond
+)
 
 func (p *proxyState) beginShutdown() {
 	p.shutdownOnce.Do(func() { close(p.shutdown) })
@@ -231,6 +244,18 @@ func (p *proxyState) stdinLoop(cmd *exec.Cmd) {
 	for {
 		n, err := os.Stdin.Read(buf)
 		if n > 0 {
+			// Ctrl+V 贴图：整块全为 0x16（单按或连按在管道里合并）且流处于干净点
+			// 才进门。探测期间本循环不再读 stdin，后续按键滞留在管道里——保序是
+			// 结构性的，无需扣押缓冲。连按按一次处理：有图时一个 0x16 都不能漏给
+			// 远端（远端 CC 收到会读远端自己的旧剪贴板，安静吃错图）。
+			if pasteKeyEnabled && !p.up.Disabled() && isCtrlVBurst(buf[:n]) {
+				p.mu.Lock()
+				clean := !p.sc.InPaste() && !p.sc.HasPending() && !p.sc.RawPasteOpen()
+				p.mu.Unlock()
+				if clean && p.interceptPasteKey() {
+					continue
+				}
+			}
 			chunk := append([]byte{}, buf[:n]...)
 			var enq []drop
 			p.mu.Lock()
@@ -240,7 +265,7 @@ func (p *proxyState) stdinLoop(cmd *exec.Cmd) {
 			// 不命中则走正常 Feed 逐字节保序透传。
 			if !p.sc.InPaste() && !p.sc.HasPending() && looksLikeBarePathChunk(chunk) {
 				if tokens, ok := p.syntaxGate(string(chunk)); ok {
-					enq = append(enq, drop{string(chunk), tokens, false})
+					enq = append(enq, drop{payload: string(chunk), tokens: tokens})
 					p.mu.Unlock()
 					p.enqueue(enq)
 					continue
@@ -254,7 +279,7 @@ func (p *proxyState) stdinLoop(cmd *exec.Cmd) {
 					// 非拖拽粘贴当场回放，与后续 EvForward 保序；
 					// 只有真拖拽候选才延后到队列异步处理。
 					if tokens, ok := p.syntaxGate(payload); ok {
-						enq = append(enq, drop{payload, tokens, true})
+						enq = append(enq, drop{payload: payload, tokens: tokens, bracketed: true})
 					} else {
 						p.writePasteLocked(payload, true)
 					}
@@ -306,54 +331,147 @@ func (p *proxyState) enqueue(ds []drop) {
 	}
 }
 
+// interceptPasteKey：Ctrl+V（单按或连按合并块）到达且流处于干净点时调用
+// （stdinLoop goroutine 上同步执行，整块只触发一次）。
+// 探测本地剪贴板（硬时限 pasteProbeDeadline）：
+//   - 有图 → 吞掉按键，图片落临时文件走拖拽同款上传管线，返回 true；
+//   - 无图（快速报错）→ 返回 false，调用方按普通字节放行；
+//   - 超时 → 判「有图但慢」（无图报错远快于时限），吞掉按键、后台等结果，
+//     最终无图只通知——绝不迟发 0x16：远端 CC 收到它会去读远端自己的剪贴板，
+//     安静吃进一张旧图，比「贴不上」更危险。
+func (p *proxyState) interceptPasteKey() bool {
+	type probe struct {
+		path string
+		err  error
+	}
+	ch := make(chan probe, 1)
+	go func() {
+		path, err := clipboardToTempPNG()
+		ch <- probe{path, err}
+	}()
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			return false
+		}
+		p.enqueueClipboard(r.path)
+		return true
+	case <-time.After(pasteProbeDeadline):
+		go func() {
+			if r := <-ch; r.err == nil {
+				p.enqueueClipboard(r.path)
+			} else {
+				Notify("moshdrop", msg("n.clipslow"))
+			}
+		}()
+		return true
+	}
+}
+
+// isCtrlVBurst：整块全为 0x16。键盘自动重复/快速连按会在探测窗口内于管道中合并，
+// 以 n>1 到达——必须整块视作一次触发，而不是漏成普通字节。
+func isCtrlVBurst(b []byte) bool {
+	if len(b) == 0 {
+		return false
+	}
+	for _, c := range b {
+		if c != ctrlV {
+			return false
+		}
+	}
+	return true
+}
+
+// enqueueClipboard 把剪贴板落地的 PNG 作为候选入队（与拖拽同管线）。
+// 快速探测命中时由 stdinLoop 同步调用，与拖拽全局保序；探测超时的后台路径迟到入队——
+// 期间发起的拖拽会排在它前面（窗口有界：剪贴板读取有 5s 硬超时）。
+func (p *proxyState) enqueueClipboard(path string) {
+	d := drop{tokens: []string{path}, bracketed: true, noReplay: true,
+		cleanup: filepath.Dir(path), source: "clipboard"}
+	select {
+	case p.drops <- d:
+	default: // 64 个在途才可能：放弃本次贴图，清理并告知
+		_ = os.RemoveAll(filepath.Dir(path))
+		Notify("moshdrop", fmt.Sprintf(msg("n.clipfailed"), msg("r.queuefull")))
+	}
+}
+
 // slowNotifyDelay：上传超过此时长仍未完成才弹「上传中」——按时间触发（与文件大小无关），
 // 治「弱网上传数十秒毫无反应 → 用户走神切窗格」的根因。可在测试中调小。
 var slowNotifyDelay = 1500 * time.Millisecond
 
-// dropWorker 串行消费拖拽队列：注入顺序 = 拖拽顺序（uploader 的承诺在此兑现）。
-// 验真失败（非文件/网络卷挂死）原样回放；上传失败 fail-open 回放 + 通知 + 留痕。
+// dropWorker 串行消费拖拽队列：注入顺序 = 入队顺序（uploader 的承诺在此兑现；
+// 唯一例外见 enqueueClipboard 的超时后台路径）。
 func (p *proxyState) dropWorker() {
 	for d := range p.drops {
-		start := time.Now()
-		total, ok := verifyLocalFiles(d.tokens, 500*time.Millisecond)
-		if !ok {
-			p.injectWhenClean(d.payload, d.bracketed)
-			continue
+		p.processDrop(d)
+	}
+}
+
+// processDrop 处理一次候选。验真失败（非文件/网络卷挂死）原样回放；
+// 上传失败 fail-open 回放 + 通知 + 留痕。剪贴板贴图（noReplay）无可回放物：只通知。
+func (p *proxyState) processDrop(d drop) {
+	if d.cleanup != "" {
+		defer os.RemoveAll(d.cleanup)
+	}
+	start := time.Now()
+	total, ok := verifyLocalFiles(d.tokens, 500*time.Millisecond)
+	if !ok {
+		if d.noReplay { // 刚落盘的临时文件消失了：不可静默吞掉用户按键
+			Notify("moshdrop", fmt.Sprintf(msg("n.clipfailed"), msg("r.tmpgone")))
 		}
-		// 大文件护栏：超过上限不自动上传（弱网传大文件会拖很久、占满带宽），
-		// 原样放行本地路径 + 通知用户手动 scp。0=不限制。
-		if limit := p.up.maxInterceptBytes; limit > 0 && total > limit {
+		p.failOpen(d)
+		return
+	}
+	// 大文件护栏：超过上限不自动上传（弱网传大文件会拖很久、占满带宽）。
+	// 拖拽：原样放行本地路径 + 建议手动 scp；剪贴板贴图：临时文件随即删除、
+	// 用户从未见过其路径，scp 文案不适用，弹专用文案。0=不限制。
+	if limit := p.up.maxInterceptBytes; limit > 0 && total > limit {
+		if d.noReplay {
+			Notify("moshdrop", fmt.Sprintf(msg("n.cliptoobig"), float64(total)/(1<<20), limit>>20))
+		} else {
 			Notify("moshdrop", fmt.Sprintf(msg("n.toobig"), float64(total)/(1<<20), limit>>20))
-			p.injectWhenClean(d.payload, d.bracketed)
-			continue
 		}
-		// 迟到反馈：上传超过 slowNotifyDelay 仍未完成才弹「上传中」，治弱网长时间静默的根因。
-		uploadingShown := make(chan struct{})
-		announce := time.AfterFunc(slowNotifyDelay, func() {
-			Notify("moshdrop", fmt.Sprintf(msg("n.uploading"), float64(total)/(1<<20), p.up.target))
-			close(uploadingShown)
-		})
-		ctx, cancel := context.WithTimeout(context.Background(), uploadTimeout(total)+30*time.Second)
-		remotes, err := p.up.Upload(ctx, d.tokens)
-		cancel()
-		ms := time.Since(start).Milliseconds()
-		// Stop()==false ⇒ 定时器已触发、「上传中」goroutine 已启动；等它真弹完再往下，
-		// 保证「上传中」严格早于「已送达/失败」（两条横幅跨 goroutine，否则毫秒级窗口会倒序）。
-		announced := !announce.Stop()
-		if announced {
-			<-uploadingShown
-		}
-		if err != nil {
+		p.failOpen(d)
+		return
+	}
+	// 迟到反馈：上传超过 slowNotifyDelay 仍未完成才弹「上传中」，治弱网长时间静默的根因。
+	uploadingShown := make(chan struct{})
+	announce := time.AfterFunc(slowNotifyDelay, func() {
+		Notify("moshdrop", fmt.Sprintf(msg("n.uploading"), float64(total)/(1<<20), p.up.target))
+		close(uploadingShown)
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), uploadTimeout(total)+30*time.Second)
+	remotes, err := p.up.Upload(ctx, d.tokens)
+	cancel()
+	ms := time.Since(start).Milliseconds()
+	// Stop()==false ⇒ 定时器已触发、「上传中」goroutine 已启动；等它真弹完再往下，
+	// 保证「上传中」严格早于「已送达/失败」（两条横幅跨 goroutine，否则毫秒级窗口会倒序）。
+	announced := !announce.Stop()
+	if announced {
+		<-uploadingShown
+	}
+	if err != nil {
+		if d.noReplay {
+			Notify("moshdrop", fmt.Sprintf(msg("n.clipfailed"), err.Error()))
+		} else {
 			Notify("moshdrop", fmt.Sprintf(msg("n.failed"), err.Error()))
-			logEvent(p.stateDir, dropEvent{Target: p.up.target, Files: baseNames(d.tokens), Bytes: total, Ms: ms, Ok: false, Err: err.Error()})
-			p.injectWhenClean(d.payload, d.bracketed)
-			continue
 		}
-		if announced {
-			Notify("moshdrop", msg("n.delivered"))
-		}
-		logEvent(p.stateDir, dropEvent{Target: p.up.target, Files: baseNames(d.tokens), Bytes: total, Ms: ms, Ok: true})
-		p.injectWhenClean(FormatInjection(remotes), d.bracketed)
+		logEvent(p.stateDir, dropEvent{Target: p.up.target, Source: d.source, Files: baseNames(d.tokens), Bytes: total, Ms: ms, Ok: false, Err: err.Error()})
+		p.failOpen(d)
+		return
+	}
+	if announced {
+		Notify("moshdrop", msg("n.delivered"))
+	}
+	logEvent(p.stateDir, dropEvent{Target: p.up.target, Source: d.source, Files: baseNames(d.tokens), Bytes: total, Ms: ms, Ok: true})
+	p.injectWhenClean(FormatInjection(remotes), d.bracketed)
+}
+
+// failOpen：拖拽原样回放本地路径；剪贴板贴图（noReplay）无可回放物，具体原因已由调用方通知。
+func (p *proxyState) failOpen(d drop) {
+	if !d.noReplay {
+		p.injectWhenClean(d.payload, d.bracketed)
 	}
 }
 

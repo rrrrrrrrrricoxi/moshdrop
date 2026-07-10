@@ -11,6 +11,7 @@ import (
 type dropEvent struct {
 	Ts     string   `json:"ts"`
 	Target string   `json:"target"`
+	Source string   `json:"src,omitempty"` // 空=拖拽 / clipboard=会话内 Ctrl+V / paste-cmd=paste 子命令
 	Files  []string `json:"files"`
 	Bytes  int64    `json:"bytes"`
 	Ms     int64    `json:"ms"`

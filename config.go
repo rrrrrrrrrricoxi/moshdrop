@@ -14,11 +14,12 @@ type Config struct {
 	Lang      string // 用户可见文案语言：""/en | zh
 	RemoteDir string // 远端落点，$HOME 下相对路径
 
-	MaxInterceptMB int // 拖拽自动上传的大小上限（MB），超过则放行本地路径+通知；0=不限制
+	MaxInterceptMB int  // 拖拽自动上传的大小上限（MB），超过则放行本地路径+通知；0=不限制
+	PasteKey       bool // 会话内孤立 Ctrl+V 贴剪贴板图片；off = 绝不检查该键
 }
 
 func defaultConfig() Config {
-	return Config{TTLDays: 7, Intercept: true, RemoteDir: ".moshdrop", MaxInterceptMB: 50}
+	return Config{TTLDays: 7, Intercept: true, RemoteDir: ".moshdrop", MaxInterceptMB: 50, PasteKey: true}
 }
 
 // LoadConfig 读 stateDir/config：全局键 + host.<name>.<key> 覆盖。
@@ -48,6 +49,8 @@ func LoadConfig(stateDir, host string) Config {
 			if n, err := strconv.Atoi(val); err == nil && n >= 0 && n < 1<<33 {
 				cfg.MaxInterceptMB = n
 			}
+		case "paste_key":
+			cfg.PasteKey = parseBool(val, cfg.PasteKey)
 		}
 	}
 	hostPrefix := "host." + host + "."

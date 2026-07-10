@@ -7,6 +7,15 @@
 - Linux 本机端支持（有真实需求再做）
 - 目录拖拽（tar 打包）——审计评审明确 rejected，除非用户反馈翻案
 
+会话内 Ctrl+V 贴图（2026-07-10 对抗评审 GO_WITH_SCOPE，已落地）观察项：
+
+- **退出条款**：events.log 已按来源分账（src=clipboard/paste-cmd）。约一个月后（2026-08 中）回看用量，clipboard 路径趋零 → paste_key 默认改 off 或撤功能。
+- 无图 Ctrl+V 延迟（实测 60-110ms）嫌钝再做：编译版 Swift 剪贴板探测 helper（warm ≤10ms）；仍不够再考虑 changeCount 异步轮询归零延迟。
+- vim 可视块 / quoted-insert / tmux copy-mode 用户报告真实碰撞再做：双击透传逃生门或自定义触发键。
+- 原⑧注入防错位落地时：剪贴板贴图场景兜底一律「不注入+通知」，禁用「远端路径写回剪贴板」（会覆盖用户刚复制的源图）。
+- 自动侦测输出流找 URL/图片之类——**永久否决**（远端可控字节驱动本地动作，信任模型缺陷，见 2026-07-10 反向打开裁决）。
+- Windows/Linux 本地端支持（含 Ctrl+V 贴图）：作者无测试条件，等社区贡献（PRs welcome 已挂 README）。
+
 发布后运营：
 
 - mosh#1184 / #1135 留言（转 public 后）
