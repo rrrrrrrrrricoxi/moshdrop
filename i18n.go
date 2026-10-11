@@ -64,9 +64,19 @@ var messages = map[string][2]string{
 	// main.go
 	"m.notarget": {"moshdrop: cannot determine ssh target; drag-upload disabled (mosh itself unaffected):", "moshdrop: 未能确定 ssh 目标，拖拽上传停用（mosh 本身不受影响）:"},
 	// paste.go
-	"p.usage": {"usage: moshdrop paste <host>   (upload clipboard image; remote path lands in your clipboard)", "用法: moshdrop paste <host>（上传剪贴板图片，远端路径回填剪贴板）"},
-	"p.noimg": {"no image in clipboard (take a screenshot with Cmd+Ctrl+Shift+4 first)", "剪贴板里没有图片（先用 Cmd+Ctrl+Shift+4 截图到剪贴板）"},
-	"p.ok":    {"remote path copied to clipboard — switch to your mosh window and paste.", "远端路径已进剪贴板——切到 mosh 窗口直接粘贴。"},
+	"p.usage":             {"usage: moshdrop paste <host>   (upload clipboard image; remote path lands in your clipboard)", "用法: moshdrop paste <host>（上传剪贴板图片，远端路径回填剪贴板）"},
+	"p.noimg":             {"no image in clipboard (take a screenshot with Cmd+Ctrl+Shift+4 first)", "剪贴板里没有图片（先用 Cmd+Ctrl+Shift+4 截图到剪贴板）"},
+	"p.ok":                {"remote path copied to clipboard — switch to your mosh window and paste.", "远端路径已进剪贴板——切到 mosh 窗口直接粘贴。"},
+	"p.copyfailed":        {"uploaded successfully, but could not copy the path: %s; use the printed path", "上传成功，但复制路径失败：%s；请使用已打印的路径"},
+	"pending.copied":      {"Uploaded paths copied. Use your terminal's normal Paste action.", "上传路径已复制。请使用终端的常规粘贴操作。"},
+	"pending.ready":       {"ready", "待复制"},
+	"pending.failed":      {"failed", "失败"},
+	"pending.empty":       {"No recent held upload results.", "没有最近的延迟上传结果。"},
+	"pending.notuploaded": {"file was not uploaded; late input was not inserted", "文件未上传；迟到输入未插入"},
+	"pending.savefailed":  {"late upload result was not inserted; recovery history could not be updated safely: %s", "迟到上传结果未插入；无法安全更新恢复记录：%s"},
+	"pending.latefailed":  {"upload failed; late input was not inserted. Result %s: %s", "上传失败；迟到输入未插入。结果 %s：%s"},
+	"pending.fallback":    {"upload ready; not inserted. Run locally: moshdrop pending --copy %s", "上传已就绪，未插入。请在本机运行：moshdrop pending --copy %s"},
+	"pending.permission":  {"Notification setup launched. Allow alerts in the macOS prompt if desired; ordinary sessions never request permission.", "通知设置已启动。如需通知，请在 macOS 提示中允许提醒；普通会话不会请求权限。"},
 	// doctor.go
 	"d.title":    {"moshdrop doctor", "moshdrop doctor"},
 	"d.mosh":     {"mosh binary", "mosh 可执行"},

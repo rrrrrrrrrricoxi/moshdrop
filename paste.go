@@ -58,8 +58,11 @@ func runPaste(args []string) int {
 		return 1
 	}
 	logEvent(stateDir, dropEvent{Target: target, Source: "paste-cmd", Files: baseNames([]string{tmp}), Bytes: size, Ms: time.Since(start).Milliseconds(), Ok: true})
-	_ = copyToClipboard(remotes[0])
-	fmt.Println(remotes[0])
+	fmt.Println(remotes[0]) // Keep the uploaded path usable even if copying fails.
+	if err := copyToClipboard(remotes[0]); err != nil {
+		fmt.Fprintln(os.Stderr, fmt.Sprintf(msg("p.copyfailed"), err.Error()))
+		return 1
+	}
 	fmt.Println(msg("p.ok"))
 	return 0
 }

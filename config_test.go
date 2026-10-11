@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func writeConfig(t *testing.T, content string) string {
@@ -100,6 +101,31 @@ func TestLoadConfigMaxInterceptMB(t *testing.T) {
 	}
 	if cfg := LoadConfig(dir, "ccc"); cfg.MaxInterceptMB != 0 {
 		t.Fatalf("host 覆盖 max_intercept_mb=0 错误: %+v", cfg)
+	}
+}
+
+func TestLoadConfigAutoInsertSeconds(t *testing.T) {
+	if cfg := LoadConfig(t.TempDir(), "host"); cfg.AutoInsertSeconds != 5 {
+		t.Fatalf("default cutoff: %+v", cfg)
+	}
+	dir := writeConfig(t, "auto_insert_seconds = 3\nhost.manual.auto_insert_seconds = 0\n")
+	if cfg := LoadConfig(dir, "other"); cfg.AutoInsertSeconds != 3 {
+		t.Fatalf("global cutoff: %+v", cfg)
+	}
+	if cfg := LoadConfig(dir, "manual"); cfg.AutoInsertSeconds != 0 {
+		t.Fatalf("explicit-copy host: %+v", cfg)
+	}
+	for _, bad := range []string{"-1", "86401", "99999999999999999999999", "not-a-number"} {
+		dir := writeConfig(t, "auto_insert_seconds = "+bad+"\n")
+		if cfg := LoadConfig(dir, "host"); cfg.AutoInsertSeconds != 5 {
+			t.Fatalf("invalid cutoff %q: %+v", bad, cfg)
+		}
+	}
+	cfg := LoadConfig(dir, "other")
+	u := NewUploader("host", nil, t.TempDir())
+	u.ApplyConfig(cfg)
+	if u.autoInsertWindow != 3*time.Second {
+		t.Fatalf("uploader cutoff not applied: %v", u.autoInsertWindow)
 	}
 }
 

@@ -51,6 +51,7 @@ type Uploader struct {
 	remoteName        string // 远端落点（$HOME 下相对路径），默认 .moshdrop
 	ttlDays           int    // 远端保质期（天），0=不清理
 	maxInterceptBytes int64  // 拖拽自动上传大小上限（字节），0=不限制
+	autoInsertWindow  time.Duration
 
 	run func(ctx context.Context, stdin io.Reader, argv []string) cmdResult
 }
@@ -66,6 +67,7 @@ func NewUploader(target string, sshArgv []string, localStateDir string) *Uploade
 		remoteName:        ".moshdrop",
 		ttlDays:           7,
 		maxInterceptBytes: int64(defaultConfig().MaxInterceptMB) << 20, // 镜像默认配置：未 ApplyConfig 也安全
+		autoInsertWindow:  time.Duration(defaultConfig().AutoInsertSeconds) * time.Second,
 		run:               realRun,
 	}
 	u.disabled.Store(target == "")
@@ -77,6 +79,7 @@ func (u *Uploader) ApplyConfig(cfg Config) {
 	u.remoteName = cfg.RemoteDir
 	u.ttlDays = cfg.TTLDays
 	u.maxInterceptBytes = int64(cfg.MaxInterceptMB) << 20
+	u.autoInsertWindow = time.Duration(cfg.AutoInsertSeconds) * time.Second
 }
 
 // dirExpr 生成远端目录的 shell 表达式："$HOME"/'name'（拼接式，含空格也安全）。

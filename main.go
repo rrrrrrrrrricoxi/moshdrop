@@ -8,7 +8,7 @@ import (
 )
 
 // version 由 goreleaser 在发布构建时注入（-X main.version）
-var version = "1.0.0"
+var version = "1.2.0"
 
 func main() {
 	// 语言尽早解析（--help 等子命令也要吃到 config 的 lang）
@@ -20,6 +20,10 @@ func main() {
 			os.Exit(runDoctor(args[1:]))
 		case "paste":
 			os.Exit(runPaste(args[1:]))
+		case "pending":
+			os.Exit(runPending(args[1:]))
+		case "notifications":
+			os.Exit(runNotifications(args[1:]))
 		case "--version", "-V":
 			fmt.Println("moshdrop", version)
 			return
@@ -89,13 +93,17 @@ func printHelp() {
   moshdrop <mosh 的任意参数>     照常连接（例: moshdrop ccc -- tmux new -A -s main）
   moshdrop paste [host]          把剪贴板里的图片上传，远端路径回填剪贴板
   moshdrop doctor <host>         全链路体检
+  moshdrop pending [host]        列出最近的延迟上传结果
+  moshdrop pending --copy <id>   明确复制所选上传的路径
+  moshdrop notifications setup  请求原生通知权限（可选）
   moshdrop --version | --help
 
 工作方式: 拖进终端的本地文件自动上传到远端（默认 ~/.moshdrop/），
 输入流里出现的是远端可用路径；剪贴板里有图时按 Ctrl+V 同样直接上传；
-其余输入逐字节透传。失败时原样放行你的输入并弹系统通知（剪贴板贴图无可放行物，
-只通知；详情见 ~/.moshdrop/events.log）。
-配置: ~/.moshdrop/config（ttl_days / intercept / lang / remote_dir / max_intercept_mb / paste_key，支持 host.<别名>.键 覆盖）
+其余输入逐字节透传。默认 5 秒内完成则自动插入；超过时限的结果保留供你明确复制。
+快速失败原样放行拖拽输入；迟到失败不再插入，剪贴板贴图失败也只通知。
+延迟结果可用 pending 找回；详情见 ~/.moshdrop/events.log。
+配置: ~/.moshdrop/config（ttl_days / intercept / lang / remote_dir / max_intercept_mb / paste_key / auto_insert_seconds，支持 host.<别名>.键 覆盖）
 `)
 		return
 	}
@@ -105,14 +113,18 @@ Usage:
   moshdrop <any mosh args>       connect as usual (e.g. moshdrop myhost -- tmux new -A -s main)
   moshdrop paste [host]          upload the clipboard image; remote path is copied back to your clipboard
   moshdrop doctor <host>         end-to-end health check
+  moshdrop pending [host]        list recent held upload results
+  moshdrop pending --copy <id>   explicitly copy a selected upload's paths
+  moshdrop notifications setup  request native notification permission (optional)
   moshdrop --version | --help
 
 How it works: local files dragged into the terminal are uploaded to the remote
 (default ~/.moshdrop/) and your input stream receives a usable remote path.
 Press Ctrl+V with an image in the clipboard to upload it the same way.
-Everything else passes through byte-for-byte. On failure your original paste is
-passed through untouched (clipboard-image path: notification only), plus a
-system notification (see ~/.moshdrop/events.log).
-Config: ~/.moshdrop/config (ttl_days / intercept / lang / remote_dir / max_intercept_mb / paste_key; host.<alias>.key overrides)
+Everything else passes through byte-for-byte. Uploads delivered within the default
+5-second window insert automatically; later results wait for explicit copying.
+Quick drag failures replay the original paste; late failures and clipboard-image
+failures do not insert input. Use pending to recover held results.
+Config: ~/.moshdrop/config (ttl_days / intercept / lang / remote_dir / max_intercept_mb / paste_key / auto_insert_seconds; host.<alias>.key overrides)
 `)
 }

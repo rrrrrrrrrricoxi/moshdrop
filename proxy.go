@@ -39,9 +39,10 @@ type drop struct {
 	payload   string
 	tokens    []string
 	bracketed bool
-	noReplay  bool   // 失败时不回放 payload——剪贴板贴图无本地路径可放行，只通知
-	cleanup   string // 非空：处理完毕删除该临时目录（剪贴板图片的落地处）
-	source    string // 事件日志来源标注；空=拖拽
+	noReplay  bool      // 失败时不回放 payload——剪贴板贴图无本地路径可放行，只通知
+	cleanup   string    // 非空：处理完毕删除该临时目录（剪贴板图片的落地处）
+	source    string    // 事件日志来源标注；空=拖拽
+	accepted  time.Time // Starts before queueing or a clipboard probe.
 }
 
 // Ctrl+V 贴图（config: paste_key）：孤立 0x16 触发本地剪贴板探测。
@@ -196,14 +197,25 @@ func (p *proxyState) replay(payload string, bracketed bool) {
 // 也不处于"溢出/中止后未闭合的裸粘贴流"窗口（否则注入的 bpEnd 会提前终结远端粘贴态）。
 // 最多等 1s 兜底强注。
 func (p *proxyState) injectWhenClean(payload string, bracketed bool) {
-	deadline := time.Now().Add(time.Second)
+	p.injectBefore(payload, bracketed, time.Time{})
+}
+
+// A delivery deadline takes priority over the existing one-second parser wait.
+// Check under the same lock as the write; never force an expired insertion.
+func (p *proxyState) injectBefore(payload string, bracketed bool, deliveryDeadline time.Time) bool {
+	parserDeadline := time.Now().Add(time.Second)
 	for {
 		p.mu.Lock()
+		now := time.Now()
+		if !deliveryDeadline.IsZero() && !now.Before(deliveryDeadline) {
+			p.mu.Unlock()
+			return false
+		}
 		clean := !p.sc.InPaste() && !p.sc.HasPending() && !p.sc.RawPasteOpen()
-		if clean || time.Now().After(deadline) {
+		if clean || !now.Before(parserDeadline) {
 			p.writePasteLocked(payload, bracketed)
 			p.mu.Unlock()
-			return
+			return true
 		}
 		p.mu.Unlock()
 		time.Sleep(5 * time.Millisecond)
@@ -265,7 +277,7 @@ func (p *proxyState) stdinLoop(cmd *exec.Cmd) {
 			// 不命中则走正常 Feed 逐字节保序透传。
 			if !p.sc.InPaste() && !p.sc.HasPending() && looksLikeBarePathChunk(chunk) {
 				if tokens, ok := p.syntaxGate(string(chunk)); ok {
-					enq = append(enq, drop{payload: string(chunk), tokens: tokens})
+					enq = append(enq, drop{payload: string(chunk), tokens: tokens, accepted: time.Now()})
 					p.mu.Unlock()
 					p.enqueue(enq)
 					continue
@@ -279,7 +291,7 @@ func (p *proxyState) stdinLoop(cmd *exec.Cmd) {
 					// 非拖拽粘贴当场回放，与后续 EvForward 保序；
 					// 只有真拖拽候选才延后到队列异步处理。
 					if tokens, ok := p.syntaxGate(payload); ok {
-						enq = append(enq, drop{payload: payload, tokens: tokens, bracketed: true})
+						enq = append(enq, drop{payload: payload, tokens: tokens, bracketed: true, accepted: time.Now()})
 					} else {
 						p.writePasteLocked(payload, true)
 					}
@@ -320,13 +332,25 @@ func (p *proxyState) syntaxGate(payload string) ([]string, bool) {
 }
 
 // enqueue 把拖拽候选按事件序推入队列（stdin 单 goroutine 保证全局有序）。
-// 队列满（64 个在途拖拽，几乎不可能）则降级为当场回放，绝不阻塞输入。
+// 队列满（64 个在途拖拽，几乎不可能）：快速候选当场回放；迟到候选不插入。
+// 迟到记录交给独立 goroutine，文件 IO/通知不进入输入热路径。
 func (p *proxyState) enqueue(ds []drop) {
 	for _, d := range ds {
+		if d.accepted.IsZero() {
+			d.accepted = time.Now()
+		}
 		select {
 		case p.drops <- d:
 		default:
-			p.replay(d.payload, d.bracketed)
+			p.mu.Lock()
+			late := p.dropLate(d)
+			if !late {
+				p.writePasteLocked(d.payload, d.bracketed)
+			}
+			p.mu.Unlock()
+			if late {
+				go p.keepLate(d, nil, fmt.Errorf("upload queue is full; file was not uploaded"))
+			}
 		}
 	}
 }
@@ -340,6 +364,7 @@ func (p *proxyState) enqueue(ds []drop) {
 //     最终无图只通知——绝不迟发 0x16：远端 CC 收到它会去读远端自己的剪贴板，
 //     安静吃进一张旧图，比「贴不上」更危险。
 func (p *proxyState) interceptPasteKey() bool {
+	accepted := time.Now()
 	type probe struct {
 		path string
 		err  error
@@ -354,12 +379,12 @@ func (p *proxyState) interceptPasteKey() bool {
 		if r.err != nil {
 			return false
 		}
-		p.enqueueClipboard(r.path)
+		p.enqueueClipboardAt(r.path, accepted)
 		return true
 	case <-time.After(pasteProbeDeadline):
 		go func() {
 			if r := <-ch; r.err == nil {
-				p.enqueueClipboard(r.path)
+				p.enqueueClipboardAt(r.path, accepted)
 			} else {
 				Notify("moshdrop", msg("n.clipslow"))
 			}
@@ -386,8 +411,12 @@ func isCtrlVBurst(b []byte) bool {
 // 快速探测命中时由 stdinLoop 同步调用，与拖拽全局保序；探测超时的后台路径迟到入队——
 // 期间发起的拖拽会排在它前面（窗口有界：剪贴板读取有 5s 硬超时）。
 func (p *proxyState) enqueueClipboard(path string) {
+	p.enqueueClipboardAt(path, time.Now())
+}
+
+func (p *proxyState) enqueueClipboardAt(path string, accepted time.Time) {
 	d := drop{tokens: []string{path}, bracketed: true, noReplay: true,
-		cleanup: filepath.Dir(path), source: "clipboard"}
+		cleanup: filepath.Dir(path), source: "clipboard", accepted: accepted}
 	select {
 	case p.drops <- d:
 	default: // 64 个在途才可能：放弃本次贴图，清理并告知
@@ -408,9 +437,12 @@ func (p *proxyState) dropWorker() {
 	}
 }
 
-// processDrop 处理一次候选。验真失败（非文件/网络卷挂死）原样回放；
-// 上传失败 fail-open 回放 + 通知 + 留痕。剪贴板贴图（noReplay）无可回放物：只通知。
+// processDrop：快速候选保持自动交付/fail-open；过期候选只保存结果与通知。
+// 剪贴板贴图（noReplay）失败无可回放物，任何来源的迟到失败都不插入。
 func (p *proxyState) processDrop(d drop) {
+	if d.accepted.IsZero() {
+		d.accepted = time.Now()
+	}
 	if d.cleanup != "" {
 		defer os.RemoveAll(d.cleanup)
 	}
@@ -452,26 +484,40 @@ func (p *proxyState) processDrop(d drop) {
 		<-uploadingShown
 	}
 	if err != nil {
-		if d.noReplay {
-			Notify("moshdrop", fmt.Sprintf(msg("n.clipfailed"), err.Error()))
-		} else {
-			Notify("moshdrop", fmt.Sprintf(msg("n.failed"), err.Error()))
-		}
 		logEvent(p.stateDir, dropEvent{Target: p.up.target, Source: d.source, Files: baseNames(d.tokens), Bytes: total, Ms: ms, Ok: false, Err: err.Error()})
-		p.failOpen(d)
+		if d.noReplay {
+			if p.dropLate(d) {
+				p.keepLate(d, nil, err)
+			} else {
+				Notify("moshdrop", fmt.Sprintf(msg("n.clipfailed"), err.Error()))
+			}
+		} else if p.insertDrop(d, d.payload) {
+			Notify("moshdrop", fmt.Sprintf(msg("n.failed"), err.Error()))
+		} else {
+			p.keepLate(d, nil, err)
+		}
 		return
 	}
-	if announced {
+	logEvent(p.stateDir, dropEvent{Target: p.up.target, Source: d.source, Files: baseNames(d.tokens), Bytes: total, Ms: ms, Ok: true})
+	if !p.insertDrop(d, FormatInjection(remotes)) {
+		p.keepLate(d, remotes, nil)
+	} else if announced {
 		Notify("moshdrop", msg("n.delivered"))
 	}
-	logEvent(p.stateDir, dropEvent{Target: p.up.target, Source: d.source, Files: baseNames(d.tokens), Bytes: total, Ms: ms, Ok: true})
-	p.injectWhenClean(FormatInjection(remotes), d.bracketed)
 }
 
-// failOpen：拖拽原样回放本地路径；剪贴板贴图（noReplay）无可回放物，具体原因已由调用方通知。
+// failOpen：只在交付窗口内回放拖拽；迟到候选保存失败信息，不插入。
+// 剪贴板贴图（noReplay）无可回放物，具体原因已由调用方通知。
 func (p *proxyState) failOpen(d drop) {
-	if !d.noReplay {
-		p.injectWhenClean(d.payload, d.bracketed)
+	if d.accepted.IsZero() {
+		d.accepted = time.Now()
+	}
+	if d.noReplay {
+		if p.dropLate(d) {
+			p.keepLate(d, nil, fmt.Errorf("%s", msg("pending.notuploaded")))
+		}
+	} else if !p.insertDrop(d, d.payload) {
+		p.keepLate(d, nil, fmt.Errorf("%s", msg("pending.notuploaded")))
 	}
 }
 

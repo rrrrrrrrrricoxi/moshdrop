@@ -1,6 +1,10 @@
 version: 2
 project_name: moshdrop
 
+before:
+  hooks:
+    - bash native-notifier/build.sh
+
 builds:
   - env: [CGO_ENABLED=0]
     goos: [darwin]
@@ -10,6 +14,10 @@ builds:
 archives:
   - formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+      - MoshdropNotifier.app/**/*
 
 checksum:
   name_template: checksums.txt
@@ -26,5 +34,12 @@ brews:
     homepage: https://github.com/rrrrrrrrrricoxi/moshdrop
     description: "Keep mosh. Just drop files. Drag-and-drop file upload for mosh sessions."
     license: MIT
+    install: |
+      bin.install "moshdrop"
+      libexec.install "MoshdropNotifier.app"
+    caveats: |
+      Late uploads are held for explicit copying. Run moshdrop pending locally.
+      Optional Copy path notifications: moshdrop notifications setup (macOS 13+).
+      The helper is ad-hoc signed, not notarized; no service or login item is installed.
     dependencies:
       - name: mosh
