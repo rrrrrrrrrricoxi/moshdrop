@@ -3,6 +3,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -26,7 +30,7 @@ jobs:
         uses: goreleaser/goreleaser-action@v6
         with:
           version: v2.18.3
-          args: release --snapshot --skip=publish --clean
+          args: ${{ github.ref_type == 'tag' && 'release --skip=publish --clean' || 'release --snapshot --skip=publish --clean' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAP_GITHUB_TOKEN: ""

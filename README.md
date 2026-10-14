@@ -98,6 +98,10 @@ you ──▶ moshdrop ──▶ mosh ──▶ remote
 - **If an upload fails** — no network, remote disk full — a quick drag failure replays the original paste with a notification. Late failures do not insert anything into the active pane and are recorded in local recovery history. Clipboard-image failures never replay input. Your typing is never blocked by an upload. `~/.moshdrop/events.log` keeps a one-line record per drop.
 - **Files don't land half-written.** Uploads go to a hidden temp name, the byte count is checked (transport integrity is ssh's job), and only then is the file atomically linked to its real name. A connection dying mid-transfer leaves at worst a hidden temp file, swept on the next connect.
 
+Automatic delivery and quick failure replay wait for clean input. They never
+insert into an open paste or an incomplete escape sequence. If input stays busy
+until the cutoff, the result is held for local recovery.
+
 ## Resource footprint (measured, Apple Silicon)
 
 These existing measurements cover the Go wrapper, not the new helper's transient
@@ -138,7 +142,7 @@ If the ssh target can't be derived from the wrapped command's arguments, set `MO
 
 **Exit codes?** Same as mosh for normal exits (mosh itself never propagates remote command exit codes — protocol limitation). If mosh dies from a signal, moshdrop exits 1.
 
-**Linux?** Remote side: any POSIX-ish `sh` + coreutils (`find -delete` needed for auto-cleanup; without it files just accumulate). Local side is macOS-only for now — PRs welcome.
+**Linux?** Remote side: POSIX-ish `sh` and the standard `link` utility (provided on GNU/Linux and BSD/macOS). `find -delete` is needed for auto-cleanup; without it files accumulate. `remote_dir` must resolve to a strict subdirectory of the remote home directory; HOME itself and symlinks outside HOME are rejected before cleanup. Local side is macOS-only for now — PRs welcome.
 
 ## License
 

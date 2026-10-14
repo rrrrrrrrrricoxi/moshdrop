@@ -54,7 +54,7 @@ func TestLoadConfigBoolFormsAndUnknownKeys(t *testing.T) {
 
 // 安全：remote_dir 不得逃逸 $HOME。
 func TestLoadConfigRemoteDirEscape(t *testing.T) {
-	for _, bad := range []string{"/etc", "../up", "a/../../b", ""} {
+	for _, bad := range []string{"/etc", "../up", "a/../../b", "", ".", "./.", "././."} {
 		dir := writeConfig(t, "remote_dir = "+bad+"\n")
 		cfg := LoadConfig(dir, "x")
 		if cfg.RemoteDir != ".moshdrop" {

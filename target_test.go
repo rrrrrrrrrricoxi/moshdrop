@@ -1,6 +1,9 @@
 package main
 
 import (
+	"encoding/json"
+	"os/exec"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -18,6 +21,10 @@ func TestDeriveSSHTarget(t *testing.T) {
 		{"with remote command", []string{"ccc", "--", "tmux", "new", "-A", "-s", "main"}, "ccc", "ssh", true},
 		{"ssh inline", []string{"--ssh=ssh -p 2222", "ccc"}, "ccc", "ssh -p 2222", true},
 		{"ssh separate", []string{"--ssh", "ssh -J jump", "ccc"}, "ccc", "ssh -J jump", true},
+		{"ssh inline after host", []string{"ccc", "--ssh=ssh -p 2222", "--", "tmux"}, "ccc", "ssh -p 2222", true},
+		{"ssh separate after host", []string{"ccc", "--ssh", "ssh -J jump", "--", "tmux"}, "ccc", "ssh -J jump", true},
+		{"last ssh option wins", []string{"--ssh=ssh -p 2222", "ccc", "--ssh=ssh -p 3333"}, "ccc", "ssh -p 3333", true},
+		{"remote command opaque", []string{"ccc", "--", "tmux", "--ssh=ssh -p 2222"}, "ccc", "ssh", true},
 		{"predict inline", []string{"--predict=always", "ccc"}, "ccc", "ssh", true},
 		{"predict separate (审计C2回归)", []string{"--predict", "always", "ccc"}, "ccc", "ssh", true},
 		{"short value flag -p", []string{"-p", "60000", "ccc"}, "ccc", "ssh", true},
@@ -37,6 +44,48 @@ func TestDeriveSSHTarget(t *testing.T) {
 			}
 		} else if err == nil {
 			t.Errorf("%s: expected error, got %q", c.name, got)
+		}
+	}
+}
+
+func TestSSHWordsMatchesMoshPerlParser(t *testing.T) {
+	if _, err := exec.LookPath("perl"); err != nil {
+		t.Skip("Perl is needed only for the independent parser comparison")
+	}
+	commands := []string{
+		`ssh -p 2222`,
+		`"/path with spaces/ssh" -o 'ProxyCommand=ssh -W %h:%p jump'`,
+		`ssh -i /path\ with\ spaces/key`,
+		`ssh "a\q" "a\$b" "a\\b"`,
+		`ssh 'a\b' 'a\'b' 'a\\b'`,
+		`ssh "" pre"middle words"post`,
+	}
+	for _, command := range commands {
+		out, err := exec.Command("perl", "-MText::ParseWords", "-MJSON::PP", "-e", `print encode_json([shellwords($ARGV[0])]);`, "--", command).Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var want []string
+		if err := json.Unmarshal(out, &want); err != nil {
+			t.Fatal(err)
+		}
+		got, err := splitSSHWords(command)
+		if err != nil || !reflect.DeepEqual(got, want) {
+			t.Fatalf("SSH command %q: got %q/%v; Mosh shellwords gives %q", command, got, err, want)
+		}
+	}
+}
+
+func TestDeriveSSHQuotedWords(t *testing.T) {
+	args := []string{"host", `--ssh="/path with spaces/ssh" -o 'ProxyCommand=ssh -W %h:%p jump' -i /path\ with\ spaces/key`, "--", "tmux"}
+	target, argv, err := DeriveSSHTarget(args)
+	want := []string{"/path with spaces/ssh", "-o", "ProxyCommand=ssh -W %h:%p jump", "-i", "/path with spaces/key"}
+	if err != nil || target != "host" || !reflect.DeepEqual(argv, want) {
+		t.Fatalf("route changed: %q %q %v", target, argv, err)
+	}
+	for _, command := range []string{"", `ssh 'unfinished`, `ssh trailing\`} {
+		if _, _, err := DeriveSSHTarget([]string{"host", "--ssh=" + command}); err == nil {
+			t.Fatalf("accepted invalid SSH command %q", command)
 		}
 	}
 }

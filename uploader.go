@@ -87,6 +87,14 @@ func (u *Uploader) dirExpr() string {
 	return `"$HOME"/` + shellQuote(u.remoteName)
 }
 
+// 在清理与写入前解析物理路径，只允许 HOME 的严格子目录。
+// 不能只检查配置字符串：符号链接可以指向 HOME 或其外部。
+func remoteDirScript(directoryExpr string) string {
+	return `h=$(cd -P "$HOME" && pwd -P) || exit 1; d=` + directoryExpr + `; ` +
+		`mkdir -p "$d" || exit 1; d=$(cd -P "$d" && pwd -P) || exit 1; ` +
+		`case "$d" in "${h%/}"/*) [ "$d" != "$h" ] || exit 1;; *) echo 'unsafe remote upload directory' >&2; exit 1;; esac; `
+}
+
 // ctlSocketDir 选 ControlMaster socket 目录：
 // 状态目录太深（unix socket 路径上限约 104 字节）时回退 /tmp/moshdrop-<uid>，
 // 回退目录必须属主是自己且 0700——否则可能被预建目录劫持 socket。
@@ -154,7 +162,10 @@ func (u *Uploader) ensure(ctx context.Context) error {
 	if u.remoteDir != "" {
 		return nil
 	}
-	inner := `d=` + u.dirExpr() + `; mkdir -p "$d" && ` +
+	if !safeRemoteDir(u.remoteName) {
+		return errors.New("unsafe remote upload directory")
+	}
+	inner := remoteDirScript(u.dirExpr()) +
 		`{ find "$d" -name ".part-*" -mmin +60 -delete 2>/dev/null || true; }`
 	if u.ttlDays > 0 { // 保质期清理：只删过期普通文件
 		inner += fmt.Sprintf(` && { find "$d" -type f ! -name ".part-*" -mtime +%d -delete 2>/dev/null || true; }`, u.ttlDays)
@@ -225,10 +236,10 @@ func uploadTimeout(size int64) time.Duration {
 	return max(d, minUploadTimeout)
 }
 
-// uploadOne：单次 ssh 往返完成"写临时名 → 字节数校验 → ln 原子落名 → 回显最终名"。
+// uploadOne：单次 ssh 往返完成"写临时名 → 字节数校验 → link 原子落名 → 回显最终名"。
 // 关键防线：
 //   - wc -c 对账：连接中途死亡时 cat 只会收到 EOF，字节数不符即拒绝落名——半截文件绝不占用正式名；
-//   - ln 原子占名：并发会话同名上传不可能互相覆盖（TOCTOU 免疫），失败自动换后缀重试；
+//   - link 原子占名：目标必须是精确路径；已有文件、目录或符号链接均换后缀重试；
 //   - 一切失败路径 rm 临时文件。脚本为单行（csh 登录 shell 也能解析外层）。
 func (u *Uploader) uploadOne(ctx context.Context, localPath string) (string, error) {
 	f, err := os.Open(localPath)
@@ -244,12 +255,15 @@ func (u *Uploader) uploadOne(ctx context.Context, localPath string) (string, err
 	defer cancel()
 
 	name := sanitizeName(localPath)
-	script := `d=` + u.dirExpr() + `; n=` + shellQuote(name) + `; t="$d/.part-$$"; ` +
+	script := remoteDirScript(shellQuote(u.remoteDir)) +
+		`[ "$d" = ` + shellQuote(u.remoteDir) + ` ] || { echo 'remote upload directory changed' >&2; exit 1; }; ` +
+		`command -v link >/dev/null 2>&1 || { echo 'remote requires the link utility' >&2; exit 1; }; ` +
+		`n=` + shellQuote(name) + `; t="$d/.part-$$"; ` +
 		`trap 'rm -f "$t"' HUP INT TERM; ` +
 		`cat > "$t" || { rm -f "$t"; exit 1; }; ` +
 		fmt.Sprintf(`[ "$(wc -c < "$t")" -eq %d ] || { rm -f "$t"; exit 1; }; `, fi.Size()) +
 		`c="$n"; i=1; case "$n" in *.*) b="${n%.*}"; e=".${n##*.}";; *) b="$n"; e="";; esac; ` +
-		`while ! ln "$t" "$d/$c" 2>/dev/null; do c="${b}-${i}${e}"; i=$((i+1)); ` +
+		`while ! link "$t" "$d/$c" 2>/dev/null; do c="${b}-${i}${e}"; i=$((i+1)); ` +
 		`[ "$i" -gt 999 ] && { rm -f "$t"; exit 1; }; done; ` +
 		`rm -f "$t"; printf '%s\n' "$c"`
 	res := u.run(tctx, f, u.sshCmd("sh -c "+shellQuote(script)))

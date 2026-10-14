@@ -13,6 +13,9 @@ click without copying. Distribution and upgrade acceptance remain separate.
   before the PTY write, under the scanner/write lock.
 - Before that cutoff, successful uploads insert as before. Quick drag failures
   replay the original local paste; clipboard-image failures never replay input.
+  Both insertion and replay wait for clean input. They never force a write into
+  an open paste or an incomplete escape sequence. If input stays busy until the
+  cutoff, the result is held for local recovery.
 - At or after the cutoff, successful uploads **do not insert or copy anything**.
   They save a grouped result locally and request an actionable notification.
 - Choose **Copy path** to copy that notification's saved result, then use the
@@ -141,6 +144,12 @@ unsafe-file rejection, and Go/Swift record-format agreement.
 CI builds/signs both helper architectures and runs its pure self-checks before
 Go tests. `MOSHDROP_TEST_NOTIFIER` enables pure cross-language fixture checks
 without loading notification center or the system clipboard.
+
+Tag publishing depends on this same CI workflow. For a tag, CI tests the tagged
+source, builds release archives with publishing disabled, and checks archive
+layout, signing, architecture, and formula syntax before the publishing job can
+start. The publishing job rebuilds from the same tag; these checks validate the
+dry-run archives, not the exact bytes produced by that later rebuild.
 
 User-approved manual UI checks passed on the built production helper with dummy
 records: alert setup (`granted=true`), independent A and grouped B Copy path actions,

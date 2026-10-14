@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -119,7 +120,7 @@ func TestDeliveryBecomesLateWaitingForCleanInput(t *testing.T) {
 		t.Fatal("forced insertion past cutoff")
 	}
 	if terminalContents(t, f) != "" || time.Since(start) > 250*time.Millisecond || len(*offered) != 0 {
-		t.Fatal("cutoff did not supersede the one-second parser fallback")
+		t.Fatal("dirty input did not stop delivery at the cutoff")
 	}
 }
 
@@ -304,4 +305,152 @@ func captureCommand(t *testing.T, fn func() int) (string, string, int) {
 	io.Copy(&o, out)
 	io.Copy(&e, errs)
 	return o.String(), e.String(), code
+}
+
+// Feed stdin-sized chunks and capture writes without a terminal or remote shell.
+func feedDeliveryBytes(p *proxyState, data string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for offset := 0; offset < len(data); offset += 32 * 1024 {
+		end := min(offset+32*1024, len(data))
+		for _, ev := range p.sc.Feed([]byte(data[offset:end])) {
+			if ev.Type == EvPaste {
+				p.writePasteLocked(string(ev.Data), true)
+			} else {
+				p.write(ev.Data)
+			}
+		}
+	}
+}
+
+func outsidePasteBytes(data []byte) string {
+	var outside strings.Builder
+	inside := false
+	for len(data) > 0 {
+		if bytes.HasPrefix(data, []byte(bpStart)) {
+			inside = true
+			data = data[len(bpStart):]
+			continue
+		}
+		if bytes.HasPrefix(data, []byte(bpEnd)) {
+			inside = false
+			data = data[len(bpEnd):]
+			continue
+		}
+		if !inside {
+			outside.WriteByte(data[0])
+		}
+		data = data[1:]
+	}
+	return outside.String()
+}
+
+func TestDeliveryDirtyPasteNeverForcesInsertion(t *testing.T) {
+	for _, failed := range []bool{false, true} {
+		for _, aborted := range []bool{false, true} {
+			for _, held := range []bool{false, true} {
+				name := fmt.Sprintf("failed=%t/aborted=%t/held=%t", failed, aborted, held)
+				t.Run(name, func(t *testing.T) {
+					p, f, paths, _ := deliveryFixture(t, 0, failed, 1)
+					if p.up.autoInsertWindow != 5*time.Second {
+						t.Fatal("regression must use default five-second window")
+					}
+					original := bpStart + strings.Repeat("x", maxPaste+1)
+					if aborted {
+						original = bpStart + "user paste waiting for its end"
+					}
+					feedDeliveryBytes(p, original)
+					if aborted {
+						p.mu.Lock()
+						for _, ev := range p.sc.Idle(3 * time.Second) {
+							p.write(ev.Data)
+						}
+						p.mu.Unlock()
+					}
+					if !p.sc.RawPasteOpen() {
+						t.Fatal("fixture did not open forwarded raw paste")
+					}
+					before := terminalContents(t, f)
+					done := make(chan struct{})
+					go func() {
+						p.processDrop(drop{payload: FormatInjection(paths), tokens: paths, bracketed: true, accepted: time.Now()})
+						close(done)
+					}()
+					// The old parser fallback forced insertion after one second.
+					select {
+					case <-done:
+						t.Fatal("delivery finished while paste was dirty")
+					case <-time.After(1200 * time.Millisecond):
+					}
+					p.mu.Lock()
+					during := terminalContents(t, f)
+					p.mu.Unlock()
+					if during != before {
+						t.Fatal("inserted bytes into an open user paste")
+					}
+					tail := "echo USER-TEXT\n" + bpEnd
+					if !held {
+						feedDeliveryBytes(p, tail)
+					}
+					select {
+					case <-done:
+					case <-time.After(5 * time.Second):
+						t.Fatal("delivery did not finish at the cutoff")
+					}
+					results, err := listPending(p.stateDir)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if held {
+						if terminalContents(t, f) != before || len(results) != 1 || results[0].OK == failed {
+							t.Fatalf("dirty result was not held: %+v", results)
+						}
+						feedDeliveryBytes(p, tail)
+					} else {
+						if len(results) != 0 {
+							t.Fatal("clean quick delivery was held")
+						}
+						payload := FormatInjection([]string{"/remote/.moshdrop/a shot.png"})
+						if failed {
+							payload = FormatInjection(paths)
+						}
+						if terminalContents(t, f) != before+tail+bpStart+payload+bpEnd {
+							t.Fatal("clean insertion or failure replay changed byte order")
+						}
+					}
+					if outside := outsidePasteBytes([]byte(terminalContents(t, f))); outside != "" {
+						t.Fatalf("user text escaped paste markers: %q", outside)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestDeliveryFullQueueHoldsDirtyReplay(t *testing.T) {
+	p, f, paths, _ := deliveryFixture(t, 0, false, 1)
+	p.drops = make(chan drop, 1)
+	p.drops <- drop{}
+	feedDeliveryBytes(p, bpStart+strings.Repeat("x", maxPaste+1))
+	before := terminalContents(t, f)
+	done := make(chan struct{})
+	Notify = func(string, string) { close(done) }
+	start := time.Now()
+	p.enqueue([]drop{{payload: FormatInjection(paths), tokens: paths, bracketed: true, accepted: time.Now()}})
+	if time.Since(start) > 250*time.Millisecond {
+		t.Fatal("queue fallback blocked input")
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("dirty queue overflow was not recorded")
+	}
+	results, err := listPending(p.stateDir)
+	if err != nil || len(results) != 1 || results[0].OK || terminalContents(t, f) != before {
+		t.Fatalf("dirty overflow replayed: %+v %v", results, err)
+	}
+	feedDeliveryBytes(p, "echo USER-TEXT\n"+bpEnd)
+	if outside := outsidePasteBytes([]byte(terminalContents(t, f))); outside != "" {
+		t.Fatalf("user text escaped paste markers: %q", outside)
+	}
 }

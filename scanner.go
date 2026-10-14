@@ -47,7 +47,7 @@ func (s *Scanner) Feed(chunk []byte) []Event {
 	s.pending = nil
 	// 裸粘贴流中观察到 bpEnd 流过 → 远端粘贴态闭合。
 	// （bpEnd 恰在块边界被切且前缀未被扣押的极端切点会漏检——
-	// rawOpen 只会多保守，注入方有 1s 兜底，不致卡死。）
+	// rawOpen 只会多保守；到交付期限仍未闭合时，上传结果留待显式复制。）
 	if s.rawOpen && bytes.Contains(data, []byte(bpEnd)) {
 		s.rawOpen = false
 	}

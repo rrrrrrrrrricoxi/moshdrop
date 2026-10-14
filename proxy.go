@@ -193,17 +193,11 @@ func (p *proxyState) replay(payload string, bracketed bool) {
 	p.mu.Unlock()
 }
 
-// injectWhenClean 等输入流到达干净点再注入：不在粘贴中、无半截转义序列滞留、
+// injectBefore 等输入流到达干净点再注入：不在粘贴中、无半截转义序列滞留、
 // 也不处于"溢出/中止后未闭合的裸粘贴流"窗口（否则注入的 bpEnd 会提前终结远端粘贴态）。
-// 最多等 1s 兜底强注。
-func (p *proxyState) injectWhenClean(payload string, bracketed bool) {
-	p.injectBefore(payload, bracketed, time.Time{})
-}
-
-// A delivery deadline takes priority over the existing one-second parser wait.
-// Check under the same lock as the write; never force an expired insertion.
+// 到交付期限仍不干净则放弃注入；绝不强行关闭用户的粘贴流。
+// 状态与期限在写入所用的锁内检查。
 func (p *proxyState) injectBefore(payload string, bracketed bool, deliveryDeadline time.Time) bool {
-	parserDeadline := time.Now().Add(time.Second)
 	for {
 		p.mu.Lock()
 		now := time.Now()
@@ -212,13 +206,19 @@ func (p *proxyState) injectBefore(payload string, bracketed bool, deliveryDeadli
 			return false
 		}
 		clean := !p.sc.InPaste() && !p.sc.HasPending() && !p.sc.RawPasteOpen()
-		if clean || !now.Before(parserDeadline) {
+		if clean {
 			p.writePasteLocked(payload, bracketed)
 			p.mu.Unlock()
 			return true
 		}
 		p.mu.Unlock()
-		time.Sleep(5 * time.Millisecond)
+		select {
+		case <-p.stop:
+			return false
+		case <-p.shutdown:
+			return false
+		case <-time.After(5 * time.Millisecond):
+		}
 	}
 }
 
@@ -332,8 +332,8 @@ func (p *proxyState) syntaxGate(payload string) ([]string, bool) {
 }
 
 // enqueue 把拖拽候选按事件序推入队列（stdin 单 goroutine 保证全局有序）。
-// 队列满（64 个在途拖拽，几乎不可能）：快速候选当场回放；迟到候选不插入。
-// 迟到记录交给独立 goroutine，文件 IO/通知不进入输入热路径。
+// 队列满（64 个在途拖拽，几乎不可能）：快速且输入干净时当场回放。
+// 迟到或输入不干净时保存失败记录；文件 IO/通知不进入输入热路径。
 func (p *proxyState) enqueue(ds []drop) {
 	for _, d := range ds {
 		if d.accepted.IsZero() {
@@ -344,11 +344,12 @@ func (p *proxyState) enqueue(ds []drop) {
 		default:
 			p.mu.Lock()
 			late := p.dropLate(d)
-			if !late {
+			clean := !p.sc.InPaste() && !p.sc.HasPending() && !p.sc.RawPasteOpen()
+			if !late && clean {
 				p.writePasteLocked(d.payload, d.bracketed)
 			}
 			p.mu.Unlock()
-			if late {
+			if late || !clean {
 				go p.keepLate(d, nil, fmt.Errorf("upload queue is full; file was not uploaded"))
 			}
 		}

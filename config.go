@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -107,7 +108,7 @@ func stripInlineComment(s string) string {
 
 // safeRemoteDir: 只允许 $HOME 下的相对路径，杜绝逃逸。
 func safeRemoteDir(p string) bool {
-	if p == "" || strings.HasPrefix(p, "/") || strings.HasPrefix(p, "~") {
+	if p == "" || path.Clean(p) == "." || strings.HasPrefix(p, "/") || strings.HasPrefix(p, "~") {
 		return false
 	}
 	for seg := range strings.SplitSeq(p, "/") {

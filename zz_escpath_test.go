@@ -112,7 +112,7 @@ func TestZZEscThenBarePathDisabled(t *testing.T) {
 	}
 }
 
-// Case C: syntax parses but verify fails (nonexistent paths) → injectWhenClean path.
+// Case C: syntax parses but verify fails (nonexistent paths) → clean-input replay.
 func TestZZEscThenBarePathVerifyFail(t *testing.T) {
 	want := "\x1b/no/such/aaa /no/such/bbb"
 	got := runProxyHarnessMulti(t, [][]byte{{0x1b}, []byte("/no/such/aaa /no/such/bbb")}, 20*time.Millisecond,

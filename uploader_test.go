@@ -201,7 +201,7 @@ func TestUploaderRealSSH(t *testing.T) {
 	u.Close()
 }
 
-// 审查 R4/R7/R8 回归：远端脚本必须含字节数对账、ln 原子落名、失败清理。
+// 审查 R4/R7/R8 回归：远端脚本必须含字节数对账、link 原子落名、失败清理。
 func TestUploadScriptSafety(t *testing.T) {
 	f := tmpFile(t, "x.png", "HELLO") // 5 字节
 	var script string
@@ -219,7 +219,7 @@ func TestUploadScriptSafety(t *testing.T) {
 	if _, err := u.Upload(context.Background(), []string{f}); err != nil {
 		t.Fatal(err)
 	}
-	for _, must := range []string{`-eq 5`, `ln "$t"`, `rm -f "$t"`, "sh -c "} {
+	for _, must := range []string{`-eq 5`, `link "$t"`, `rm -f "$t"`, "sh -c "} {
 		if !strings.Contains(script, must) {
 			t.Fatalf("远端脚本缺少防线 %q:\n%s", must, script)
 		}
